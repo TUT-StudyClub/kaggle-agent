@@ -1,0 +1,13 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+var/
+*.sqlite3*
+*credentials*.json
+*token*.json
+dist/
+.import_linter_cache/

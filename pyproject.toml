@@ -1,0 +1,138 @@
+[project]
+name = "kaggle-agent"
+version = "0.1.0"
+description = "個人用Slack AIエージェント"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pydantic>=2.12,<3",
+  "pyyaml>=6.0.3,<7",
+  "httpx>=0.28,<1",
+  "slack-bolt>=1.26,<2",
+  "google-auth>=2.40,<3",
+  "google-auth-oauthlib>=1.2,<2",
+  "requests>=2.32,<3",
+  "python-dotenv>=1.1,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.4,<10", "ruff>=0.14,<1", "ty>=0.0.1,<1", "import-linter>=2.5,<3"]
+
+[project.scripts]
+kaggle-agent = "apps.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src"]
+sources = ["src"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "modules/planning/resources/skills"
+"rules" = "modules/planning/resources/rules"
+"config/tools.toml" = "modules/planning/resources/tools.toml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.importlinter]
+root_packages = ["apps", "modules", "shared"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Contexts keep inward dependencies"
+type = "layers"
+containers = ["modules.*"]
+layers = ["(presentation) : infrastructure", "application", "domain"]
+exhaustive = true
+exhaustive_ignores = ["public", "composition"]
+
+[[tool.importlinter.contracts]]
+name = "Domains do not depend on other contexts"
+type = "independence"
+modules = [
+  "modules.interaction.domain",
+  "modules.knowledge.domain",
+  "modules.scheduling.domain",
+  "modules.planning.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "SDKs and persistence belong to infrastructure"
+type = "forbidden"
+source_modules = ["modules.*.domain", "modules.*.application"]
+forbidden_modules = ["httpx", "slack_sdk", "slack_bolt", "google", "sqlite3", "subprocess"]
+
+[[tool.importlinter.contracts]]
+name = "Modules do not depend on runtime configuration or composition"
+type = "forbidden"
+source_modules = ["modules"]
+forbidden_modules = ["config", "composition", "diagnostics", "apps"]
+
+[[tool.importlinter.contracts]]
+name = "Knowledge internals are private"
+type = "protected"
+protected_modules = ["modules.knowledge.domain", "modules.knowledge.application", "modules.knowledge.infrastructure"]
+allowed_importers = ["modules.knowledge.**"]
+
+[[tool.importlinter.contracts]]
+name = "Scheduling internals are private"
+type = "protected"
+protected_modules = ["modules.scheduling.domain", "modules.scheduling.application", "modules.scheduling.infrastructure"]
+allowed_importers = ["modules.scheduling.**"]
+
+[[tool.importlinter.contracts]]
+name = "Planning internals are private"
+type = "protected"
+protected_modules = ["modules.planning.domain", "modules.planning.application", "modules.planning.infrastructure"]
+allowed_importers = ["modules.planning.**"]
+
+[[tool.importlinter.contracts]]
+name = "Interaction internals are private"
+type = "protected"
+protected_modules = ["modules.interaction.domain", "modules.interaction.application", "modules.interaction.infrastructure"]
+allowed_importers = ["modules.interaction.**"]
+
+[[tool.importlinter.contracts]]
+name = "Only application entry points assemble modules"
+type = "protected"
+protected_modules = ["modules.*.composition"]
+allowed_importers = ["apps.**"]
+
+[[tool.importlinter.contracts]]
+name = "Inner layers do not assemble implementations"
+type = "forbidden"
+source_modules = ["modules.*.domain", "modules.*.application"]
+forbidden_modules = ["modules.*.composition"]
+
+[[tool.importlinter.contracts]]
+name = "Shared code does not depend on application modules"
+type = "forbidden"
+source_modules = ["shared"]
+forbidden_modules = ["modules", "apps", "config", "composition", "diagnostics"]
+
+[[tool.importlinter.contracts]]
+name = "Shared code keeps inward dependencies"
+type = "layers"
+containers = ["shared"]
+layers = ["infrastructure", "application", "domain"]
+exhaustive = true
+exhaustive_ignores = ["errors"]
+
+[[tool.importlinter.contracts]]
+name = "Shared inner layers do not import SDKs"
+type = "forbidden"
+source_modules = ["shared.domain", "shared.application"]
+forbidden_modules = ["httpx", "slack_sdk", "slack_bolt", "google", "sqlite3", "subprocess"]
