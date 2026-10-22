@@ -290,7 +290,10 @@ def test_clarification_keeps_request_across_short_answers_and_clears_after_reply
 
 
 @pytest.mark.parametrize("has_citation", [False, True])
-def test_reply_does_not_dump_all_observed_event_links(harness: Harness, has_citation: bool):
+@pytest.mark.parametrize("clarify", [False, True])
+def test_reply_preserves_text_without_appending_observed_event_links(
+    harness: Harness, has_citation: bool, clarify: bool
+):
     for index in range(20):
         event = harness.calendar.event("personal", str(index)).model_copy(
             update={"url": f"https://calendar.google.com/event/test-{index}"}
@@ -301,12 +304,10 @@ def test_reply_does_not_dump_all_observed_event_links(harness: Harness, has_cita
         text += " https://calendar.google.com/event/test-19"
     harness.planner.steps = [
         Plan(action=ListEvents(calendar_alias="personal", period=draft().period)),
-        Plan(action=Reply(text=text)),
+        Plan(action=Clarify(question=text) if clarify else Reply(text=text)),
     ]
     harness.submit()
     harness.agent.run_once()
     harness.agent.deliver_notifications()
     reply = harness.messenger.sent[-1]
-    assert reply.count("https://calendar.google.com/event/test-") == (1 if has_citation else 5)
-    if has_citation:
-        assert reply == text
+    assert reply == text

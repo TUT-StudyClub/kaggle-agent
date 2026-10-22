@@ -115,24 +115,6 @@ class ProcessJobUseCase:
                 match plan.action:
                     case Reply(text=text) | Clarify(question=text):
                         last = observations[-1] if observations else json.loads(context)
-                        urls = []
-                        for observation in observations:
-                            for key in ("page", "event"):
-                                value = observation.get(key)
-                                if isinstance(value, dict) and value.get("url"):
-                                    urls.append(str(value["url"]))
-                            for key in ("pages", "events"):
-                                values = observation.get(key)
-                                if isinstance(values, list):
-                                    urls.extend(
-                                        str(value["url"])
-                                        for value in values
-                                        if isinstance(value, dict) and value.get("url")
-                                    )
-                        urls = list(dict.fromkeys(urls))
-                        if urls and not any(url in text for url in urls):
-                            label = "参照" if len(urls) <= 5 else "参照候補（先頭5件）"
-                            text += "\n" + label + ":\n" + "\n".join(urls[:5])
                         self.completion.finish(
                             job,
                             last,
