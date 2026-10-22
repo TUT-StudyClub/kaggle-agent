@@ -1,0 +1,76 @@
+version: '3'
+
+env:
+  UV_CACHE_DIR: '{{.UV_CACHE_DIR | default "/tmp/kaggle-agent-uv"}}'
+
+tasks:
+  init:
+    desc: 非公開のローカル設定ファイルを作成（既存ファイルは保持）
+    cmds:
+      - uv run --locked kaggle-agent init
+
+  doctor:
+    desc: 認証状態と実サービスの接続設定を読取りで診断
+    cmds:
+      - uv run --locked kaggle-agent doctor --services
+
+  doctor:ai:
+    desc: Codex CLIの構造化出力を1回検証（契約の利用枠を消費）
+    cmds:
+      - uv run --locked kaggle-agent doctor --probe
+
+  evaluate:research:
+    desc: 架空の内部データと実際の公開Web検索で情報源選択を評価（Codexの利用枠を消費）
+    cmds:
+      - uv run --locked python -m scripts.evaluate_research {{.CLI_ARGS}}
+
+  run:
+    desc: Slack Socket Modeでエージェントを起動
+    cmds:
+      - uv run --locked kaggle-agent run
+
+  auth:google:
+    desc: Googleの認証画面を開きトークンを非公開ファイルへ保存
+    interactive: true
+    cmds:
+      - uv run --locked kaggle-agent auth-google
+
+  sync:
+    desc: ロックファイルに従って依存関係を同期
+    cmds:
+      - uv sync --locked
+
+  check:
+    desc: lint・型・依存関係・テストを順に検証
+    cmds:
+      - task: lint
+      - task: typecheck
+      - task: architecture
+      - task: test
+
+  lint:
+    desc: Ruffのlintと整形状態を検証
+    cmds:
+      - uv run --locked ruff check .
+      - uv run --locked ruff format --check .
+
+  format:
+    desc: Ruffで自動修正・整形
+    cmds:
+      - uv run --locked ruff check --fix .
+      - uv run --locked ruff format .
+
+  typecheck:
+    desc: tyで型を検証
+    cmds:
+      - uv run --locked ty check
+
+  architecture:
+    desc: import-linterで依存契約を検証
+    cmds:
+      - uv run --locked lint-imports
+
+  test:
+    desc: pytestでテストを実行
+    cmds:
+      - uv run --locked pytest -q
