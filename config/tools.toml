@@ -1,0 +1,18 @@
+# スキル本文は skills/<名前>/SKILL.md、実装はPythonのPythonToolに置く。
+# 共通ルールはrules/common.md、スキル別ルールはrules/<skillの値>.mdを読む。
+# 接続先の許可範囲（ID・カレンダー所有権・書込み可否）は.envで管理する。
+# actionsを減らすと、スキル本文に手順が残っていても、その操作は実行できない。
+
+# 公開情報の調査にCodexの組込みWeb検索を使う。無効化は"disabled"。
+# Notion・Calendarの操作は引き続きPythonツールで実行する。
+web_search = "live"
+
+[tools.knowledge]
+enabled = true
+skill = "knowledge"
+actions = ["notion.search", "notion.read", "notion.create", "notion.append", "notion.update_block"]
+
+[tools.scheduling]
+enabled = true
+skill = "scheduling"
+actions = ["calendar.list", "calendar.events", "calendar.free", "calendar.create", "calendar.update"]
