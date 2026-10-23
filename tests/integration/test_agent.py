@@ -48,6 +48,50 @@ def test_notion_search_then_grounded_reply(harness: Harness):
 
 
 @pytest.mark.parametrize(
+    "final_action,expected_status",
+    [
+        (Reply(text="調査結果です"), JobStatus.SUCCEEDED),
+        (Clarify(question="どの候補を使いますか？"), JobStatus.SUCCEEDED),
+        (
+            CreatePage(parent_alias="notes", title="調査結果", body="確認した内容"),
+            JobStatus.AWAITING_APPROVAL,
+        ),
+    ],
+)
+def test_research_continues_until_reply_clarification_or_approval(
+    harness: Harness, final_action, expected_status
+):
+    page = harness.knowledge.pages["page1"]
+    harness.knowledge.pages = {
+        f"page{index}": page.model_copy(update={"id": f"page{index}"}) for index in range(1, 13)
+    }
+    page_ids = list(harness.knowledge.pages)
+    harness.planner.steps = [
+        Plan(action=SearchPages(query="調査対象")),
+        *(Plan(action=ReadPage(page_id=page_id)) for page_id in page_ids),
+        Plan(action=final_action),
+    ]
+    job_id = harness.submit()
+    assert harness.agent.run_once()
+    job = harness.jobs.get(job_id)
+    assert job and job.status == expected_status
+    assert len(harness.planner.requests) == 14
+    observations = harness.planner.requests[-1].observations
+    assert len(observations) == 13
+    for result, page_id in zip(observations[1:], page_ids, strict=True):
+        observed_page = result["page"]
+        assert isinstance(observed_page, dict) and observed_page["id"] == page_id
+    assert harness.knowledge.writes == harness.calendar.writes == 0
+    harness.agent.deliver_notifications()
+    if isinstance(final_action, Reply):
+        assert harness.messenger.sent == [final_action.text]
+    elif isinstance(final_action, Clarify):
+        assert harness.messenger.sent == [final_action.question]
+    else:
+        assert job.plan_json == Plan(action=final_action).model_dump_json()
+
+
+@pytest.mark.parametrize(
     "action",
     [
         CreatePage(parent_alias="notes", title="記録", body="概要", record_thread=True),

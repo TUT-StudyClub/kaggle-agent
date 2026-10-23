@@ -146,7 +146,7 @@ def test_competition_source_is_optional_but_rejects_invalid_ids(tmp_path, monkey
 
 @pytest.mark.parametrize(
     ("key", "value"),
-    [("USER_IDS", "not-json-private"), ("CALENDARS", "[]"), ("MAX_READ_STEPS", "0")],
+    [("USER_IDS", "not-json-private"), ("CALENDARS", "[]"), ("RETENTION_DAYS", "0")],
 )
 def test_invalid_environment_configuration_is_reported_without_values(
     tmp_path: Path, monkeypatch, key: str, value: str

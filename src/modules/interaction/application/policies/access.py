@@ -19,7 +19,6 @@ class AgentPolicy(ValueObject):
     calendars: dict[str, CalendarConfig] = {}
     retention_days: int = Field(default=7, ge=1, le=30)
     approval_minutes: int = Field(default=15, ge=1, le=60)
-    max_read_steps: int = Field(default=4, ge=1, le=8)
 
     @field_validator("notion_competition_data_source_id")
     @classmethod

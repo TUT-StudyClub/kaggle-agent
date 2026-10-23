@@ -153,7 +153,7 @@ class ProcessJobUseCase:
             if not followup:
                 thread = self._thread_at_message(job)
                 context = self.jobs.context(job.message.source)
-            for _ in range(self.settings.max_read_steps + 1):
+            while True:
                 if followup and not self.jobs.accepts_followup(job.message):
                     self._ignore(job, "tracking_stopped")
                     return True
@@ -213,8 +213,6 @@ class ProcessJobUseCase:
                     and plan.action.kind != "calendar.list"
                     and not any("calendars" in observation for observation in observations)
                 ):
-                    if len(observations) >= self.settings.max_read_steps:
-                        break
                     # 過去の会話や古い操作案の対応で進めず、この依頼のDB対応を先に取得する。
                     observations.append(self.actions.execute(job, Plan(action=ListCalendars())))
                     continue
@@ -250,15 +248,12 @@ class ProcessJobUseCase:
                         outcome="awaiting_approval",
                     )
                     return True
-                if len(observations) >= self.settings.max_read_steps:
-                    break
                 result = self.actions.execute(job, plan)
                 if isinstance(plan.action, FindFree):
                     # 日付・時刻・判定はPythonの計算結果から直接返す。AIに再編集させない。
                     self.completion.finish(job, result, availability_reply(result))
                     return True
                 observations.append(result)
-            raise AgentError("step_limit", "参照回数の上限に達しました。依頼を絞ってください。")
         except AgentError as error:
             if followup and not activity_started:
                 self._ignore(job, "response_check_failed", error.code)

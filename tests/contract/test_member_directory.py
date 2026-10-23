@@ -5,6 +5,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from modules.knowledge.public import SearchPages
 from modules.planning.public import Plan
 from modules.scheduling.application.services.member_mapping import MemberMappingService
 from modules.scheduling.composition import compose_scheduling
@@ -221,7 +222,10 @@ def test_stale_or_missing_identity_does_not_return_someone_elses_events(harness,
     assert caught.value.code == code
 
 
-def test_agent_refreshes_directory_before_using_a_stale_calendar_action(harness, monkeypatch):
+@pytest.mark.parametrize("prior_reads", [0, 8])
+def test_agent_refreshes_directory_before_using_a_stale_calendar_action(
+    harness, monkeypatch, prior_reads
+):
     member = CalendarMember(name="田中", slack_user_id="U2", label_id="label-a")
     directory = Mock(spec=NotionMemberDirectory)
     directory.calendar_aliases = frozenset({"personal"})
@@ -239,14 +243,15 @@ def test_agent_refreshes_directory_before_using_a_stale_calendar_action(harness,
     )
     monkeypatch.setattr(harness.calendar, "calendars", lambda: [calendar])
     harness.planner.steps = [
+        *(Plan(action=SearchPages(query=f"対象{index}")) for index in range(prior_reads)),
         Plan(action=ListEvents(calendar_alias="personal", period=period(), label_id="stale")),
         Plan(action=ListEvents(calendar_alias="personal", period=period(), slack_user_id="U2")),
         Plan.model_validate({"action": {"kind": "reply", "text": "該当する予定はありません。"}}),
     ]
     harness.submit("<@U2>の予定")
     harness.agent.run_once()
-    latest = harness.planner.requests[1]
-    calendars = latest.observations[0]["calendars"]
+    latest = harness.planner.requests[prior_reads + 1]
+    calendars = latest.observations[prior_reads]["calendars"]
     assert isinstance(calendars, list)
     assert calendars[0]["members"][0]["slack_user_id"] == "U2"
     assert directory.members.call_count == 2  # 対応一覧と、照会時点の再読。
