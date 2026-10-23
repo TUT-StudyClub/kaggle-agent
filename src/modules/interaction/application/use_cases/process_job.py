@@ -91,8 +91,6 @@ class ProcessJobUseCase:
             thread = self.messenger.thread(job.message.source)
             context = self.jobs.context(job.message.source)
             for _ in range(self.settings.max_read_steps + 1):
-                if not self.jobs.consume_ai_budget(self.settings.max_ai_calls_per_day):
-                    raise AgentError("daily_limit", "本日のAI呼び出し上限に達しました。")
                 self.activity.update(job.message.source, Activity.THINKING)
                 plan = self.planner.plan(
                     PlanningRequest(

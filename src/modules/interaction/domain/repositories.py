@@ -70,9 +70,6 @@ class JobRepository(ABC):
     def purge(self, before: float) -> int: ...
 
     @abstractmethod
-    def consume_ai_budget(self, limit: int) -> bool: ...
-
-    @abstractmethod
     def notify(self, job: Job, text: str, *, outcome: str | None = None) -> None: ...
 
     @abstractmethod

@@ -1,5 +1,4 @@
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -60,13 +59,6 @@ def test_event_tombstones_survive_body_purge(harness: Harness):
         )
         is None
     )
-
-
-def test_daily_budget_is_atomic_and_persistent(harness: Harness):
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda _: harness.jobs.consume_ai_budget(3), range(20)))
-    assert sum(results) == 3
-    assert not SQLiteJobRepository(harness.jobs.path).consume_ai_budget(3)
 
 
 def test_terminal_job_cannot_run_again(harness: Harness):

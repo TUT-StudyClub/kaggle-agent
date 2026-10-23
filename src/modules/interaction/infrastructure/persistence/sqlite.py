@@ -3,10 +3,8 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from modules.interaction.domain.meetings import MeetingReceipt, MeetingRepository
 from modules.interaction.domain.models import (
@@ -54,7 +52,6 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                     id TEXT PRIMARY KEY, source TEXT NOT NULL, text TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS ai_usage (day TEXT PRIMARY KEY, count INTEGER NOT NULL);
             """)
             if version < 2:
                 # v1のジョブ・通知を保持したまま、返信の復旧用テーブルだけを追加する。
@@ -431,18 +428,6 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
     def release_reminder(self, key: str) -> None:
         with self.connection() as db:
             db.execute("DELETE FROM schedule_reminders WHERE key=? AND state='sending'", (key,))
-
-    def consume_ai_budget(self, limit: int) -> bool:
-        day = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
-        with self.connection() as db:
-            db.execute("INSERT OR IGNORE INTO ai_usage VALUES (?,0)", (day,))
-            return (
-                db.execute(
-                    "UPDATE ai_usage SET count=count+1 WHERE day=? AND count<?",
-                    (day, limit),
-                ).rowcount
-                == 1
-            )
 
     def _notify(self, db: sqlite3.Connection, job: Job, text: str) -> None:
         notice_id = f"{job.id}/{job.status}"

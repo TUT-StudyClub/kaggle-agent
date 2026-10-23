@@ -23,6 +23,16 @@ def test_receipt_is_silent_and_final_reply_is_delivered(harness: Harness):
     assert harness.messenger.sent == ["回答です"]
 
 
+def test_ai_calls_continue_after_thirty_requests(harness: Harness):
+    harness.planner.steps = [Plan(action=Reply(text="回答です")) for _ in range(31)]
+    for index in range(31):
+        job_id = harness.submit(event_id=f"event{index}")
+        assert harness.agent.run_once()
+        job = harness.jobs.get(job_id)
+        assert job and job.status == JobStatus.SUCCEEDED
+    assert len(harness.planner.requests) == 31
+
+
 def test_notion_search_then_grounded_reply(harness: Harness):
     harness.planner.steps = [
         Plan(action=SearchPages(query="テスト")),
