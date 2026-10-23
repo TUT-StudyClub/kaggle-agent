@@ -1,48 +1,39 @@
 # Slack AIエージェント
 
 NotionとGoogle CalendarをSlackから操作する、個人用アシスタントです。
-Codex CLIが操作案を生成し、Pythonが検証・実行します。
-質問に応じてNotion・Google Calendar・Webを選び、必要に応じて組み合わせて調べます。
+Codex CLIが質問に応じてNotion・Google Calendar・Webを調べ、Pythonが操作を検証・実行します。
 書き込みは内容を提示し、Slackで承認を受けてから実行します。
-承認待ちメッセージに依頼した本人が👍・✅・☑️・🆗・👌のリアクションを付けるか、
-同じスレッドに「OK」「いいよ」「進めて」「👍」などと返信すると承認できます。
-従来の「承認＋ジョブID」も使えます。期限切れ・別の人・別の操作への反応では実行しません。
-Botの確認質問にもリアクションや短い返信で返答できます。
-確認質問への返答では依頼の整理を再開し、書込みは提示された操作案の承認後に実行します。
-チャンネルではメンションで会話を始め、同じ人の続きの質問にはメンションなしで応答します。
-人同士の会話や宛先が曖昧な発言には応答しません（AIによる判定のため誤判定はあり得ます）。
-スレッドに `!stop` と送ると全員分の追跡を停止し、Botへの再メンションで再開します。
-停止状態は再起動後も保持します。停止は自動追跡を対象とし、承認済みの操作は取り消しません。
-予定作成・Member DBのメンバーへの招待メール送信・指定チャンネルへの周知は、
-まとめて1回の承認で実行できます。`@channel`は依頼で許可された場合に使います。
-招待先にはMember DBの`Calendar Emails`、周知先には許可済みでBotが参加するチャンネルが必要です。
 
 ## セットアップ
+
+Python 3.14・uv・Task・認証済みのCodex CLIを用意します。
 
 ```sh
 task sync
 task init
 ```
 
-1. [Slackマニフェスト](config/slack-manifest.json)でAppを作成し、
-   Socket Modeと`connections:write`を持つAppトークンを用意します。
-   既存Appにリアクション承認を追加する場合は、`reaction_added`イベントと
-   `reactions:read`権限を追加し、Appをワークスペースへ再インストールします。
-2. `.env`にSlack・Notionのトークンと、許可するユーザー・
-   チャンネル（DMを含む）・Notionページ・カレンダーを設定します。
+1. [Slackマニフェスト](config/slack-manifest.json)でAppを作成・インストールし、
+   Socket Modeを有効にして`connections:write`付きのAppトークンを発行します。
+2. [.env.example](.env.example)を参考に、`.env`へトークンと許可するユーザー・チャンネル（DMを含む）・Notion・カレンダーを設定します。
    Notionの対象ページにはインテグレーションを接続します。
-3. Googleのデスクトップ用OAuthクライアントJSONを、設定の`GOOGLE_CLIENT_FILE`へ配置します。
-4. 以下を実行してGoogle認証とCodexの接続確認を行います。
-   `task doctor:ai`はCodexの利用枠を消費します。
+3. Googleのデスクトップ用OAuthクライアントJSONを`GOOGLE_CLIENT_FILE`のパスへ配置します。
 
-   ```sh
-   task auth:google
-   task doctor:ai
-   ```
+```sh
+task auth:google
+task doctor:ai
+task doctor
+task run
+```
 
-5. 利用条件・利用枠を確認し、設定・接続診断がすべて成功したら起動します。
+`task doctor:ai`はCodexの利用枠を消費します。診断がすべて成功したら起動してください。
 
-   ```sh
-   task doctor
-   task run
-   ```
+## 使い方
+
+- チャンネルではBotへのメンションで会話を開始します。続きの質問はメンション不要です。
+- 操作案は、依頼した本人が👍などのリアクションか同じスレッドへの「OK」で承認します。
+- スレッドへの`!stop`で全員分の自動追跡を停止し、Botへの再メンションで再開します。
+
+## 開発
+
+`task check`でlint・型・依存関係・テストを検証し、`task format`でコードを整形します。
