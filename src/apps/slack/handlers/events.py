@@ -23,13 +23,25 @@ def register_listeners(app: App, agent: InteractionFacade, bot_user_id: str) -> 
                 user_id=event.get("user", ""),
             )
             text = re.sub(rf"<@{re.escape(bot_user_id)}>", "", event["text"]).strip()
+            mentioned = f"<@{bot_user_id}>" in event["text"]
+            addressing = (
+                "mention"
+                if mentioned
+                else "direct"
+                if event.get("channel_type") == "im"
+                else "followup"
+            )
             if event.get("type") == "message" and event.get("channel_type") != "im":
-                if f"<@{bot_user_id}>" not in event["text"] and not agent.tracks(source):
+                if not mentioned and text != "!stop" and not agent.tracks(source):
                     return
             # app_mentionとmessage.channelsで同じ投稿を受けても一度だけ登録する。
             agent.receive(
                 IncomingMessage(
-                    event_id=f"{source.channel_id}/{event['ts']}", source=source, text=text
+                    event_id=f"{source.channel_id}/{event['ts']}",
+                    source=source,
+                    text=text,
+                    addressing=addressing,
+                    message_ts=event["ts"],
                 )
             )
         except ValidationError, KeyError:
