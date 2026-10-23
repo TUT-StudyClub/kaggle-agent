@@ -16,6 +16,9 @@ class Settings(AgentPolicy):
     slack_bot_token: SecretStr = SecretStr("")
     slack_app_token: SecretStr = SecretStr("")
     notion_token: SecretStr = SecretStr("")
+    kaggle_api_token: SecretStr = SecretStr("")
+    kaggle_config_dir: Path = Path.home() / ".kaggle"
+    kaggle_workspace: Path = Path("var/kaggle")
     daily_schedule_reminder: DailyScheduleReminder | None = None
 
     @model_validator(mode="after")
@@ -51,6 +54,8 @@ class Settings(AgentPolicy):
         for field in cls.model_fields:
             key = field.upper()
             value = os.environ.get(key, values.get(key))
+            if field == "kaggle_owner_user_id" and value == "":
+                value = None
             if value is not None:
                 data[field] = json.loads(value) if field in json_fields else value
         return cls.model_validate(data)
