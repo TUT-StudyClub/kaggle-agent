@@ -1,3 +1,6 @@
+from .application.dto.meetings import CreateMeeting as CreateMeeting
+from .application.dto.meetings import ListAnnouncementChannels as ListAnnouncementChannels
+from .application.dto.meetings import MeetingAnnouncement as MeetingAnnouncement
 from .application.dto.planning import (
     WRITE_KINDS as WRITE_KINDS,
 )

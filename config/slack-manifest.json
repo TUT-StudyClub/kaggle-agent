@@ -19,6 +19,7 @@
       "bot": [
         "app_mentions:read",
         "chat:write",
+        "reactions:read",
         "users:read",
         "channels:history",
         "channels:read",
@@ -35,7 +36,8 @@
         "app_mention",
         "message.im",
         "message.channels",
-        "message.groups"
+        "message.groups",
+        "reaction_added"
       ]
     },
     "socket_mode_enabled": true,

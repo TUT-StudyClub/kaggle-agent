@@ -3,7 +3,7 @@ import re
 from pydantic import ValidationError
 from slack_bolt import App
 
-from modules.interaction.public import IncomingMessage, InteractionFacade, Source
+from modules.interaction.public import ApprovalReaction, IncomingMessage, InteractionFacade, Source
 
 
 def register_listeners(app: App, agent: InteractionFacade, bot_user_id: str) -> None:
@@ -37,3 +37,24 @@ def register_listeners(app: App, agent: InteractionFacade, bot_user_id: str) -> 
 
     app.event("app_mention")(receive)
     app.event("message")(receive)
+
+    def receive_reaction(body: dict, event: dict) -> None:
+        item = event.get("item", {})
+        if item.get("type") != "message" or event.get("item_user") != bot_user_id:
+            return
+        if event.get("user") == bot_user_id:
+            return
+        try:
+            agent.receive_reaction(
+                ApprovalReaction(
+                    team_id=body.get("team_id", ""),
+                    channel_id=item.get("channel", ""),
+                    message_ts=item.get("ts", ""),
+                    user_id=event.get("user", ""),
+                    reaction=event.get("reaction", ""),
+                )
+            )
+        except ValidationError:
+            return
+
+    app.event("reaction_added")(receive_reaction)

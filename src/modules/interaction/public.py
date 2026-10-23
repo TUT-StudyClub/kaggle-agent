@@ -5,5 +5,6 @@ from .application.policies.access import AgentPolicy as AgentPolicy
 from .application.ports.messenger import Activity as Activity
 from .application.ports.messenger import Messenger as Messenger
 from .application.services.jobs import JobManagement as JobManagement
+from .domain.models import ApprovalReaction as ApprovalReaction
 from .domain.models import IncomingMessage as IncomingMessage
 from .domain.models import Source as Source

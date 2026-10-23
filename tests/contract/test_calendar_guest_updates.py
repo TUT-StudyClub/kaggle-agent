@@ -101,6 +101,7 @@ def test_guest_event_update_requires_approval_and_preserves_invitation_data(
             patches.append(request)
             assert request.headers["If-Match"] == before["etag"]
             assert request.url.params["sendUpdates"] == "none"
+            assert request.url.params["eventLabelVersion"] == "1"
             if change == "during_patch":
                 return httpx.Response(412)
             body = json.loads(request.content)

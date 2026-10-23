@@ -272,7 +272,7 @@ def test_atomic_daily_reservation_and_v2_migration_preserve_existing_jobs(remind
     assert second.reminder_state("same-day") == "sending"
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM seen_events").fetchall() == [("keep",)]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_calendar_title_cannot_inject_slack_mentions(reminder):

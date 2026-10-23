@@ -4,7 +4,8 @@ from modules.scheduling.application.dto.commands import (
     ListEvents,
 )
 from modules.scheduling.application.services.member_mapping import MemberMappingService
-from modules.scheduling.domain.models import Event, TimeRange, free_slots
+from modules.scheduling.application.use_cases.find_free import FindFreeUseCase
+from modules.scheduling.domain.models import Event, TimeRange
 from modules.scheduling.domain.repositories import CalendarRepository
 from modules.scheduling.domain.services.member_mapping import resolve_label
 from shared.errors import AgentError
@@ -63,12 +64,6 @@ class ReadScheduleUseCase:
                     ]
                 }
             case FindFree():
-                busy = self.repository.busy(action.calendar_aliases, action.period)
-                return {
-                    "free": [
-                        slot.model_dump(mode="json")
-                        for slot in free_slots(action.period, busy, action.minutes)
-                    ]
-                }
+                return FindFreeUseCase(self.repository, self.members).execute(action)
             case _:
                 raise AgentError("unsupported_action", "未対応の予定操作です。")

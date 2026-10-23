@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from modules.interaction.application.ports.announcements import AnnouncementSender
 from modules.interaction.application.ports.messenger import Activity, Messenger
 from modules.interaction.application.services.tools import ToolRegistry
 from modules.interaction.composition import build_agent
@@ -165,6 +166,10 @@ class FakeCalendar(CalendarRepository):
             url="https://calendar.google.com/event/test",
             etag=self.etag,
             editable=True,
+            guest_emails=frozenset(draft.guest_emails),
+            attendees_complete=True,
+            label_id=draft.label.id if draft.label else None,
+            label=draft.label,
         )
         self.stored[key] = event
         return event
@@ -191,6 +196,7 @@ class Harness:
     label_users: dict[str, dict[str, str]] | None = None
     member_directory: MemberDirectory | None = None
     clock: Clock | None = None
+    announcements: AnnouncementSender | None = None
 
     def configure(
         self,
@@ -200,6 +206,7 @@ class Harness:
         member_directory: MemberDirectory | None = None,
         tools: ToolRegistry | None = None,
         clock: Clock | None = None,
+        announcements: AnnouncementSender | None = None,
     ) -> None:
         if policy is not None:
             self.policy = policy
@@ -209,9 +216,19 @@ class Harness:
             self.member_directory = member_directory
         if clock is not None:
             self.clock = clock
+        if announcements is not None:
+            self.announcements = announcements
         knowledge = compose_knowledge(self.knowledge)
         scheduling = compose_scheduling(
-            self.calendar, {"personal"}, self.label_users, self.member_directory
+            self.calendar,
+            {"personal"},
+            self.label_users,
+            self.member_directory,
+            creation_labels={
+                alias: config.creation_label
+                for alias, config in self.policy.calendars.items()
+                if config.creation_label is not None
+            },
         )
         self.agent = build_agent(
             self.policy,
@@ -223,6 +240,8 @@ class Harness:
             self.skillbook,
             tools=tools,
             clock=self.clock,
+            announcements=self.announcements,
+            meeting_receipts=self.jobs,
         )
 
     def submit(self, text: str = "依頼", event_id: str = "event1") -> str:

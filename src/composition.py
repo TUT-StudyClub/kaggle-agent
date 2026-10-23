@@ -77,6 +77,7 @@ def build(settings: Settings, stack: ExitStack) -> tuple[App, InteractionFacade]
         planning.skillbook,
         clock=clock,
         daily_schedule_reminder=settings.daily_schedule_reminder,
+        bot_user_id=auth["user_id"],
     )
     app = App(client=slack_client, token_verification_enabled=False)
     register_listeners(app, agent, auth["user_id"])

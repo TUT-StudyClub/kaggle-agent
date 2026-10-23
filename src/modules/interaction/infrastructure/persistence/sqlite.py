@@ -8,7 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from modules.interaction.domain.meetings import MeetingReceipt, MeetingRepository
 from modules.interaction.domain.models import (
+    ApprovalReaction,
     IncomingMessage,
     Job,
     JobStatus,
@@ -20,7 +22,7 @@ from modules.interaction.domain.repositories import DeliveryRepository, JobRepos
 from shared.errors import AgentError
 
 
-class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository):
+class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository, MeetingRepository):
     """短い独立トランザクション。ジョブはclaim、定期通知は日別の予約で排他する。"""
 
     def __init__(self, path: Path):
@@ -28,7 +30,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
         self.path = path
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise AgentError("database_version", "このバージョンではDBを開けません。")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -70,6 +72,13 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
                     );
                     PRAGMA user_version=3;
                 """)
+            if version < 4:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS meeting_receipts (
+                        key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
+                    );
+                    PRAGMA user_version=4;
+                """)
         self.path.chmod(0o600)
 
     @contextmanager
@@ -82,30 +91,33 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
             db.close()
 
     def enqueue(self, message: IncomingMessage) -> Job | None:
+        with self.connection() as db:
+            return self._enqueue(db, message)
+
+    def _enqueue(self, db: sqlite3.Connection, message: IncomingMessage) -> Job | None:
         event_key = hashlib.sha256(
             f"{message.source.team_id}/{message.event_id}".encode(),
         ).hexdigest()
         job = Job(id=uuid4().hex, message=message, updated_at=time.time())
-        with self.connection() as db:
-            if (
-                db.execute(
-                    "INSERT OR IGNORE INTO seen_events VALUES (?)",
-                    (event_key,),
-                ).rowcount
-                == 0
-            ):
-                return None
+        if (
             db.execute(
-                "INSERT INTO jobs VALUES (?,?,?,?,?,?)",
-                (
-                    job.id,
-                    event_key,
-                    message.source.conversation_key,
-                    job.status,
-                    job.model_dump_json(),
-                    job.updated_at,
-                ),
-            )
+                "INSERT OR IGNORE INTO seen_events VALUES (?)",
+                (event_key,),
+            ).rowcount
+            == 0
+        ):
+            return None
+        db.execute(
+            "INSERT INTO jobs VALUES (?,?,?,?,?,?)",
+            (
+                job.id,
+                event_key,
+                message.source.conversation_key,
+                job.status,
+                job.model_dump_json(),
+                job.updated_at,
+            ),
+        )
         return job
 
     def claim(self) -> Job | None:
@@ -159,6 +171,127 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
             self._save(db, approved)
         return True
 
+    def approve_pending(self, source: Source, now: float) -> bool:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT payload FROM jobs WHERE conversation_key=? AND status='awaiting_approval'",
+                (source.conversation_key,),
+            ).fetchall()
+            if len(rows) != 1:
+                return False
+            job = Job.model_validate_json(rows[0][0])
+            row = db.execute(
+                "SELECT payload FROM reply_deliveries WHERE id=?",
+                (f"{job.id}/awaiting_approval",),
+            ).fetchone()
+            if row is None:
+                return False
+            delivery = ReplyDelivery.model_validate_json(row[0])
+            if delivery.state != "done" or delivery.source != source or not delivery.message_ts:
+                return False
+            approved = job.approve(source, now)
+            if approved is None:
+                return False
+            self._save(db, approved)
+        return True
+
+    def approve_reaction(self, reaction: ApprovalReaction, now: float) -> bool:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT payload FROM reply_deliveries WHERE "
+                "json_extract(payload,'$.source.team_id')=? AND "
+                "json_extract(payload,'$.source.channel_id')=? AND "
+                "json_extract(payload,'$.source.user_id')=? AND "
+                "json_extract(payload,'$.message_ts')=? AND "
+                "json_extract(payload,'$.state')='done' AND id LIKE '%/awaiting_approval'",
+                (reaction.team_id, reaction.channel_id, reaction.user_id, reaction.message_ts),
+            ).fetchall()
+            if len(rows) != 1:
+                return False
+            delivery = ReplyDelivery.model_validate_json(rows[0][0])
+            row = db.execute(
+                "SELECT payload FROM jobs WHERE id=?", (delivery.id.split("/")[0],)
+            ).fetchone()
+            if row is None:
+                return False
+            job = Job.model_validate_json(row[0])
+            approved = job.approve(delivery.source, now)
+            if approved is None:
+                return False
+            self._save(db, approved)
+        return True
+
+    def _clarification_job(self, db: sqlite3.Connection, source: Source) -> Job | None:
+        if db.execute(
+            "SELECT 1 FROM jobs WHERE conversation_key=? "
+            "AND status IN ('queued','running','awaiting_approval') LIMIT 1",
+            (source.conversation_key,),
+        ).fetchone():
+            return None
+        row = db.execute(
+            "SELECT result FROM conversations WHERE key=?",
+            (source.conversation_key,),
+        ).fetchone()
+        context = json.loads(row[0]) if row else {}
+        pending = context.get("pending_clarification")
+        dialogue = context.get("dialogue", [])
+        if not pending or not dialogue:
+            return None
+        job_id = dialogue[-1].get("job_id")
+        row = db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        job = Job.model_validate_json(row[0])
+        if job.status != JobStatus.SUCCEEDED or job.message.source != source or job.write_started:
+            return None
+        stored = json.loads(job.result_json or "{}")
+        if stored.get("pending_clarification") != pending:
+            return None
+        row = db.execute(
+            "SELECT payload FROM reply_deliveries WHERE id=?",
+            (f"{job.id}/succeeded",),
+        ).fetchone()
+        if row is None:
+            return None
+        delivery = ReplyDelivery.model_validate_json(row[0])
+        if delivery.source != source or delivery.state != "done" or not delivery.message_ts:
+            return None
+        return job
+
+    def answer_clarification(self, message: IncomingMessage) -> Job | None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self._clarification_job(db, message.source) is None:
+                return None
+            return self._enqueue(db, message)
+
+    def answer_clarification_reaction(self, reaction: ApprovalReaction) -> bool:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT payload FROM reply_deliveries WHERE "
+                "json_extract(payload,'$.source.team_id')=? AND "
+                "json_extract(payload,'$.source.channel_id')=? AND "
+                "json_extract(payload,'$.source.user_id')=? AND "
+                "json_extract(payload,'$.message_ts')=? AND "
+                "json_extract(payload,'$.state')='done' AND id LIKE '%/succeeded'",
+                (reaction.team_id, reaction.channel_id, reaction.user_id, reaction.message_ts),
+            ).fetchall()
+            if len(rows) != 1:
+                return False
+            delivery = ReplyDelivery.model_validate_json(rows[0][0])
+            job = self._clarification_job(db, delivery.source)
+            if job is None or delivery.id != f"{job.id}/succeeded":
+                return False
+            message = IncomingMessage(
+                event_id=f"clarification-reaction/{job.id}",
+                source=delivery.source,
+                text=f":{reaction.reaction}:（直前の確認質問への同意リアクション）",
+            )
+            return self._enqueue(db, message) is not None
+
     def recover(self) -> int:
         count = 0
         with self.connection() as db:
@@ -176,10 +309,15 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
                     job = job.model_copy(update={"status": JobStatus.QUEUED})
                 self._save(db, job)
                 if job.status == JobStatus.FAILED:
+                    message = (
+                        "承認の有効期限が切れたため、操作は実行していないよ。再度依頼してね。"
+                        if job.error_code == "approval_expired"
+                        else "実行結果が不明だよ。再実行前に結果を照合してね。"
+                    )
                     self._notify(
                         db,
                         job,
-                        f"ジョブ {job.id}: {job.error_code}。再実行前に結果を照合してください。",
+                        f"ジョブ {job.id}: {message} [{job.error_code}]",
                     )
                 count += 1
         return count
@@ -265,6 +403,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
             db.execute("DELETE FROM notifications WHERE created_at<?", (before,))
             db.execute("DELETE FROM reply_deliveries WHERE updated_at<?", (before,))
             db.execute("DELETE FROM schedule_reminders WHERE updated_at<?", (before,))
+            db.execute("DELETE FROM meeting_receipts WHERE updated_at<?", (before,))
         return count
 
     def reminder_state(self, key: str) -> ReminderState | None:
@@ -376,3 +515,25 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository)
     def forget_delivery(self, notification_id: str) -> None:
         with self.connection() as db:
             db.execute("DELETE FROM reply_deliveries WHERE id=?", (notification_id,))
+
+    def reserve_meeting(self, receipt: MeetingReceipt) -> bool:
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "INSERT OR IGNORE INTO meeting_receipts VALUES (?,?,?)",
+                    (receipt.key, receipt.model_dump_json(), time.time()),
+                ).rowcount
+                == 1
+            )
+
+    def meeting(self, key: str) -> MeetingReceipt | None:
+        with self.connection() as db:
+            row = db.execute("SELECT payload FROM meeting_receipts WHERE key=?", (key,)).fetchone()
+        return MeetingReceipt.model_validate_json(row[0]) if row else None
+
+    def save_meeting(self, receipt: MeetingReceipt) -> None:
+        with self.connection() as db:
+            db.execute(
+                "UPDATE meeting_receipts SET payload=?,updated_at=? WHERE key=?",
+                (receipt.model_dump_json(), time.time(), receipt.key),
+            )

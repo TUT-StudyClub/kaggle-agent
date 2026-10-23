@@ -2,9 +2,11 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from modules.knowledge.public import KnowledgeService
-from modules.planning.public import Action, SkillBook
+from modules.planning.public import Action, CreateMeeting, ListAnnouncementChannels, SkillBook
 from modules.scheduling.public import SchedulingService
 from shared.errors import AgentError
+
+from .meetings import MeetingService
 
 
 class PythonTool(ABC):
@@ -79,6 +81,29 @@ class SchedulingTool(PythonTool):
         return self.service.reconcile(action, key)
 
 
+class MeetingTool(PythonTool):
+    def __init__(self, service: MeetingService):
+        self.service = service
+
+    @property
+    def name(self) -> str:
+        return "meetings"
+
+    @property
+    def actions(self) -> frozenset[str]:
+        return frozenset({"slack.channels", "meeting.create"})
+
+    def execute(self, action: Action, source_url: str, key: str) -> dict[str, Any]:
+        if isinstance(action, ListAnnouncementChannels):
+            return {"announcement_channels": self.service.channels()}
+        if isinstance(action, CreateMeeting):
+            return self.service.execute(action, key)
+        raise AgentError("unsupported_action", "未対応の会議操作です。")
+
+    def reconcile(self, action: Action, key: str) -> dict[str, Any] | None:
+        return self.service.reconcile(action, key) if isinstance(action, CreateMeeting) else None
+
+
 class ToolRegistry:
     def __init__(self, tools: tuple[PythonTool, ...], skillbook: SkillBook):
         self.skillbook = skillbook
@@ -99,6 +124,8 @@ class ToolRegistry:
     def execute(self, action: Action, source_url: str, key: str) -> dict[str, Any]:
         if not self.skillbook.permits(action.kind) or action.kind not in self.tools:
             raise AgentError("forbidden_tool", "このPythonツールの操作は設定で許可されていません。")
+        if isinstance(action, CreateMeeting) and not self.skillbook.permits("calendar.create"):
+            raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
         return self.tools[action.kind].execute(action, source_url, key)
 
     def reconcile(self, action: Action, key: str) -> dict[str, Any] | None:

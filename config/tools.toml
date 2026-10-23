@@ -16,3 +16,8 @@ actions = ["notion.search", "notion.read", "notion.create", "notion.append", "no
 enabled = true
 skill = "scheduling"
 actions = ["calendar.list", "calendar.events", "calendar.free", "calendar.create", "calendar.update"]
+
+[tools.meetings]
+enabled = true
+skill = "scheduling"
+actions = ["slack.channels", "meeting.create"]

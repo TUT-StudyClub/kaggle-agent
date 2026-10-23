@@ -1,3 +1,4 @@
+from .application.dto.availability import AvailabilityResult as AvailabilityResult
 from .application.dto.commands import (
     CreateEvent as CreateEvent,
 )

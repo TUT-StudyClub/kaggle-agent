@@ -30,6 +30,14 @@ class IncomingMessage(ValueObject):
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ApprovalReaction(ValueObject):
+    team_id: str = Field(min_length=1)
+    channel_id: str = Field(min_length=1)
+    message_ts: str = Field(pattern=r"^\d+\.\d+$")
+    user_id: str = Field(min_length=1)
+    reaction: str = Field(min_length=1)
+
+
 class ReplyDelivery(ValueObject):
     id: str
     source: Source
@@ -42,6 +50,13 @@ class ReplyDelivery(ValueObject):
 class PendingClarification(ValueObject):
     requests: list[str] = Field(min_length=1, max_length=8)
     question: str = Field(min_length=1, max_length=2000)
+
+
+class ConversationTurn(ValueObject):
+    job_id: str
+    instruction: str
+    reply: str
+    received_at: datetime
 
 
 class JobStatus(StrEnum):

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from .models import IncomingMessage, Job, ReplyDelivery, Source
+from .models import ApprovalReaction, IncomingMessage, Job, ReplyDelivery, Source
 
 
 class DeliveryRepository(ABC):
@@ -29,6 +29,18 @@ class JobRepository(ABC):
 
     @abstractmethod
     def approve(self, job_id: str, source: Source, now: float) -> bool: ...
+
+    @abstractmethod
+    def approve_pending(self, source: Source, now: float) -> bool: ...
+
+    @abstractmethod
+    def approve_reaction(self, reaction: ApprovalReaction, now: float) -> bool: ...
+
+    @abstractmethod
+    def answer_clarification(self, message: IncomingMessage) -> Job | None: ...
+
+    @abstractmethod
+    def answer_clarification_reaction(self, reaction: ApprovalReaction) -> bool: ...
 
     @abstractmethod
     def recover(self) -> int: ...

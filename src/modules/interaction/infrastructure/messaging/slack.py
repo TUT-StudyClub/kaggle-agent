@@ -15,11 +15,17 @@ from shared.errors import AgentError
 
 class SlackMessenger(Messenger):
     def __init__(
-        self, client: WebClient, policy: AgentPolicy, deliveries: DeliveryRepository | None = None
+        self,
+        client: WebClient,
+        policy: AgentPolicy,
+        deliveries: DeliveryRepository | None = None,
+        *,
+        bot_user_id: str | None = None,
     ):
         self.client = client
         self.policy = policy
         self.deliveries = deliveries
+        self.bot_user_id = bot_user_id
 
     def status(self, source: Source, activity: Activity) -> None:
         self._authorize(source)
@@ -95,6 +101,9 @@ class SlackMessenger(Messenger):
     def deliver(self, notification_id: str, source: Source, text: str) -> None:
         self._authorize(source)
         store = self.deliveries
+        if store is not None and notification_id.endswith("/awaiting_approval"):
+            self._deliver_approval(notification_id, source, text, store)
+            return
         if store is None or not notification_id.endswith("/succeeded") or len(text) > 12000:
             self.send(source, text)
             return
@@ -179,6 +188,53 @@ class SlackMessenger(Messenger):
             # TSが得られたストリームは次回に同じ返信を修復する。別投稿にフォールバックしない。
             raise AgentError("slack_stream", "Slackへの返信送信が中断しました。") from None
 
+    def _deliver_approval(
+        self,
+        notice_id: str,
+        source: Source,
+        text: str,
+        store: DeliveryRepository,
+    ) -> None:
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        existing = store.get_delivery(notice_id)
+        if existing is not None:
+            if existing.source != source or existing.text_digest != digest:
+                raise AgentError("delivery_mismatch", "承認案の送信先・内容が一致しません。")
+            if existing.state == "done":
+                return
+            raise AgentError("slack_delivery_uncertain", "承認案の送信結果を確認してください。")
+        delivery = ReplyDelivery(id=notice_id, source=source, text_digest=digest, mode="message")
+        store.save_delivery(delivery)
+        try:
+            try:
+                response = self._post(source, text)
+            except SlackApiError as error:
+                code = error.response.get("error")
+                if code not in {"internal_error", "fatal_error", "request_timeout"} and (
+                    getattr(error.response, "status_code", 500) < 500
+                ):
+                    store.forget_delivery(notice_id)
+                raise
+            ts = response.get("ts")
+            delivery = ReplyDelivery.model_validate(
+                {
+                    **delivery.model_dump(),
+                    "state": "done",
+                    "message_ts": ts,
+                }
+            )
+            if delivery.message_ts is None:
+                raise AgentError(
+                    "slack_delivery_uncertain", "承認案のメッセージIDを確認できません。"
+                )
+            store.save_delivery(delivery)
+        except ValidationError:
+            raise AgentError(
+                "slack_delivery_uncertain", "承認案のメッセージIDが不正です。"
+            ) from None
+        except SlackClientError, OSError:
+            raise AgentError("slack_approval_delivery", "承認案の送信が中断しました。") from None
+
     def thread(self, source: Source) -> str:
         self._authorize(source)
         messages = []
@@ -189,22 +245,37 @@ class SlackMessenger(Messenger):
                 kwargs["cursor"] = cursor
             raw = self._read("conversations_replies", **kwargs)
             for item in raw.get("messages", []):
-                # 他の利用者の本文をAIに渡さない。MVPは許可ユーザー1名。
-                if (
+                # 認証済みの自分のBotだけを追加する。他のBotや非許可ユーザーは除外。
+                own_reply = (
+                    self.bot_user_id is not None
+                    and item.get("user") == self.bot_user_id
+                    and item.get("subtype") in {None, "bot_message"}
+                )
+                allowed_user = (
                     item.get("user") in self.policy.user_ids
                     and not item.get("bot_id")
                     and not item.get("subtype")
-                ):
+                )
+                if own_reply or allowed_user:
                     messages.append(
-                        {"user": item["user"], "ts": item["ts"], "text": item.get("text", "")}
+                        {
+                            "role": "assistant" if own_reply else "user",
+                            "user": item["user"],
+                            "ts": item["ts"],
+                            "text": item.get("text", ""),
+                        }
                     )
             cursor = raw.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 text = json.dumps(messages, ensure_ascii=False)
+                # Bot回答を含めると履歴が増えるため、直近の会話を優先する。
+                while len(text) > 24000 and len(messages) > 1:
+                    messages.pop(0)
+                    text = json.dumps(messages, ensure_ascii=False)
                 if len(text) > 24000:
-                    raise AgentError(
-                        "thread_too_large", "スレッドが長すぎます。範囲を絞ってください。"
-                    )
+                    messages[0]["text"] = messages[0]["text"][-12000:]
+                    messages[0]["truncated"] = True
+                    text = json.dumps(messages, ensure_ascii=False)
                 return text
         raise AgentError("thread_too_large", "スレッドの取得上限に達しました。")
 

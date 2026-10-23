@@ -96,12 +96,17 @@ class GoogleCalendarRepository(CalendarRepository):
             label=(labels or {}).get(label_id) if label_id else None,
             color_id=raw.get("colorId") or None,
             creator_email=creator,
+            organizer_email=raw.get("organizer", {}).get("email") or None,
             guest_emails=frozenset(a["email"] for a in guests if a.get("email")),
+            attendees_complete=(
+                not raw.get("attendeesOmitted", False) and all(a.get("email") for a in guests)
+            ),
             participants_complete=(
                 bool(creator)
                 and not raw.get("attendeesOmitted", False)
                 and all(a.get("email") for a in guests)
             ),
+            blocks_time=raw.get("transparency") != "transparent",
             editable=(
                 raw.get("organizer", {}).get("self", False)
                 and not raw.get("locked", False)
@@ -119,6 +124,7 @@ class GoogleCalendarRepository(CalendarRepository):
             "singleEvents": "true",
             "orderBy": "startTime",
             "maxResults": 100,
+            "eventLabelVersion": 1,
         }
         result = []
         labels = None
@@ -164,7 +170,7 @@ class GoogleCalendarRepository(CalendarRepository):
         ]
 
     def event(self, alias: str, event_id: str) -> Event:
-        raw = self.http.request("GET", self._path(alias, event_id))
+        raw = self.http.request("GET", self._path(alias, event_id), params={"eventLabelVersion": 1})
         if raw.get("status") == "cancelled":
             raise AgentError("not_found", "予定は削除済みです。")
         return self._event(alias, raw)
@@ -174,7 +180,11 @@ class GoogleCalendarRepository(CalendarRepository):
 
     def find_applied(self, alias: str, event_id: str | None, key: str) -> Event | None:
         try:
-            raw = self.http.request("GET", self._path(alias, event_id or self.event_key(key)))
+            raw = self.http.request(
+                "GET",
+                self._path(alias, event_id or self.event_key(key)),
+                params={"eventLabelVersion": 1},
+            )
         except AgentError as error:
             if error.code == "not_found":
                 return None
@@ -196,13 +206,24 @@ class GoogleCalendarRepository(CalendarRepository):
 
     def create(self, alias: str, draft: EventDraft, key: str) -> Event:
         event_id = self.event_key(key)
-        try:
-            return self.event(alias, event_id)
-        except AgentError as error:
-            if error.code != "not_found":
-                raise
+        existing = self.find_applied(alias, None, key)
+        if existing is not None:
+            self._verify(existing, draft)
+            return existing
         body = self._body(draft, key) | {"id": event_id}
-        self.http.request("POST", self._path(alias), json=body, params={"sendUpdates": "none"})
+        if draft.label is not None:
+            body["eventLabelId"] = draft.label.id
+        if draft.guest_emails:
+            body["attendees"] = [{"email": email} for email in draft.guest_emails]
+        self.http.request(
+            "POST",
+            self._path(alias),
+            json=body,
+            params={
+                "sendUpdates": "all" if draft.guest_emails else "none",
+                "eventLabelVersion": 1,
+            },
+        )
         result = self.event(alias, event_id)
         self._verify(result, draft)
         return result
@@ -212,6 +233,14 @@ class GoogleCalendarRepository(CalendarRepository):
             result.title != draft.title
             or datetime.fromisoformat(result.start) != draft.period.start
             or datetime.fromisoformat(result.end) != draft.period.end
+            or (draft.label is not None and result.label != draft.label)
+            or (
+                draft.guest_emails
+                and (
+                    not result.attendees_complete
+                    or {email.lower() for email in result.guest_emails} != set(draft.guest_emails)
+                )
+            )
         ):
             raise UncertainWrite()
 
@@ -222,7 +251,7 @@ class GoogleCalendarRepository(CalendarRepository):
             self._path(alias, event.id),
             json=self._body(draft, key),
             headers={"If-Match": event.etag},
-            params={"sendUpdates": "none"},
+            params={"sendUpdates": "none", "eventLabelVersion": 1},
         )
         result = self.event(alias, event.id)
         self._verify(result, draft)

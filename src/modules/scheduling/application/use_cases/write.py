@@ -22,7 +22,11 @@ class WriteScheduleUseCase:
     def execute(self, action: object, key: str) -> dict[str, object]:
         match action:
             case CreateEvent():
-                self.authorization.prepare(action)
+                if self.authorization.prepare(action) != action:
+                    raise AgentError(
+                        "creation_label_changed", "承認後に予定作成時のラベル設定が変わったよ。"
+                    )
+                action = self.members.prepare_invitation(action, approved=True)
                 event = self.repository.create(action.calendar_alias, action.draft, key)
             case UpdateEvent():
                 current = self.repository.event(action.calendar_alias, action.event_id)

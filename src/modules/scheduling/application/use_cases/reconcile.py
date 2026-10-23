@@ -16,4 +16,19 @@ class ReconcileScheduleUseCase:
             action.event_id if isinstance(action, UpdateEvent) else None,
             key,
         )
+        if event is not None and isinstance(action, CreateEvent):
+            if (
+                event.title != action.draft.title
+                or event.busy_period() != action.draft.period
+                or (action.draft.label is not None and event.label != action.draft.label)
+                or (
+                    action.draft.guest_emails
+                    and (
+                        not event.attendees_complete
+                        or {email.lower() for email in event.guest_emails}
+                        != set(action.draft.guest_emails)
+                    )
+                )
+            ):
+                return None
         return {"event": self.members.event_result(event)} if event else None

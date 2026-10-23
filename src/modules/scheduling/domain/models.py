@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
@@ -37,7 +38,7 @@ class CalendarMember(ValueObject):
     @classmethod
     def valid_emails(cls, values: frozenset[str]) -> frozenset[str]:
         emails = frozenset(value.strip().lower() for value in values)
-        if any(not re.fullmatch(r"[^@\s]+@[^@\s]+", email) for email in emails):
+        if any(not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+", email) for email in emails):
             raise ValueError("Calendar Emailsにはメールアドレスを指定してください")
         return emails
 
@@ -65,13 +66,42 @@ class Event(ValueObject):
     label: EventLabel | None = None
     color_id: str | None = None
     creator_email: str | None = None
+    organizer_email: str | None = None
+    attendees_complete: bool = False
     guest_emails: frozenset[str] = frozenset()
     participants_complete: bool = False
+    blocks_time: bool = True
+
+    def busy_period(self) -> TimeRange | None:
+        if not self.blocks_time:
+            return None
+
+        def local(value: str) -> datetime:
+            parsed = datetime.fromisoformat(value)
+            if "T" not in value:
+                return parsed.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+            if parsed.tzinfo is None:
+                raise ValueError("予定の時刻にタイムゾーンがありません")
+            return parsed
+
+        return TimeRange(start=local(self.start), end=local(self.end))
 
 
 class EventDraft(ValueObject):
     title: str = Field(min_length=1, max_length=200)
     period: TimeRange
+    guest_emails: tuple[str, ...] = ()
+    label: EventLabel | None = None
+
+    @field_validator("guest_emails")
+    @classmethod
+    def valid_guests(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip().lower() for value in values)
+        if len(set(normalized)) != len(normalized) or any(
+            not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+", value) for value in normalized
+        ):
+            raise ValueError("招待先には重複しないメールアドレスを指定してください")
+        return normalized
 
 
 def free_slots(window: TimeRange, busy: list[TimeRange], minutes: int) -> list[TimeRange]:

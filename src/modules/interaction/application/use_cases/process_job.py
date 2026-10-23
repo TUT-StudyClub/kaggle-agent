@@ -5,7 +5,9 @@ from modules.interaction.application.policies.access import AgentPolicy
 from modules.interaction.application.ports.messenger import Activity, Messenger
 from modules.interaction.application.services.actions import ActionService
 from modules.interaction.application.services.activity import ActivityReporter
+from modules.interaction.application.services.availability_reply import availability_reply
 from modules.interaction.application.services.completion import JobCompletion
+from modules.interaction.application.services.meetings import meeting_preview
 from modules.interaction.application.services.tools import ToolRegistry
 from modules.interaction.domain.models import (
     JobStatus,
@@ -14,12 +16,14 @@ from modules.interaction.domain.repositories import JobRepository
 from modules.planning.public import (
     WRITE_KINDS,
     Clarify,
+    CreateMeeting,
     Plan,
     Planner,
     PlanningRequest,
     Reply,
 )
 from modules.scheduling.public import (
+    FindFree,
     ListCalendars,
     SchedulingService,
 )
@@ -63,16 +67,24 @@ class ProcessJobUseCase:
             if job.plan_json:
                 if (job.approval_expires_at or 0) < self.clock.timestamp():
                     raise AgentError(
-                        "approval_expired", "承認の有効期限が切れました。再度依頼してください。"
+                        "approval_expired",
+                        "承認の有効期限が切れたため、操作は実行していないよ。再度依頼してね。",
                     )
                 plan = Plan.model_validate_json(job.plan_json)
                 job = job.start_write()
                 self.jobs.save(job)
                 result = self.actions.execute(job, plan)
+                text = (
+                    f"「{plan.action.event.draft.title}」を作成して、"
+                    + ("招待メール送信を要求したよ。" if plan.action.event.guest_user_ids else "")
+                    + f"#{plan.action.announcement.channel_name}への周知も完了したよ。"
+                    if isinstance(plan.action, CreateMeeting)
+                    else "実行しました。\n" + json.dumps(result, ensure_ascii=False, indent=2)
+                )
                 self.completion.finish(
                     job,
                     result,
-                    "実行しました。\n" + json.dumps(result, ensure_ascii=False, indent=2),
+                    text,
                 )
                 return True
             observations = []
@@ -104,6 +116,9 @@ class ProcessJobUseCase:
                                     "writable": v.writable,
                                     "label_users": v.label_users,
                                     "member_directory": v.member_data_source_id is not None,
+                                    "creation_label": v.creation_label.model_dump(mode="json")
+                                    if v.creation_label is not None
+                                    else None,
                                 }
                                 for k, v in self.settings.calendars.items()
                             },
@@ -124,7 +139,10 @@ class ProcessJobUseCase:
                         return True
                 if (
                     self.scheduling.uses_member_directory
-                    and plan.action.kind.startswith("calendar.")
+                    and (
+                        plan.action.kind.startswith("calendar.")
+                        or isinstance(plan.action, CreateMeeting)
+                    )
                     and plan.action.kind != "calendar.list"
                     and not any("calendars" in observation for observation in observations)
                 ):
@@ -135,7 +153,16 @@ class ProcessJobUseCase:
                     continue
                 if plan.action.kind in WRITE_KINDS:
                     self.activity.update(job.message.source, Activity.PREPARING)
-                    plan = self.actions.prepare(job, plan)
+                    try:
+                        plan = self.actions.prepare(job, plan)
+                    except AgentError as error:
+                        if error.code not in {
+                            "invitation_missing_email",
+                            "invitation_ambiguous_email",
+                        }:
+                            raise
+                        self.completion.finish(job, {}, error.message, error.message)
+                        return True
                     job = job.transition(
                         JobStatus.AWAITING_APPROVAL,
                         plan_json=plan.model_dump_json(),
@@ -145,17 +172,25 @@ class ProcessJobUseCase:
                     preview = json.dumps(
                         plan.action.model_dump(mode="json"), ensure_ascii=False, indent=2
                     ).replace("`", "\\u0060")
+                    description = (
+                        meeting_preview(plan.action)
+                        if isinstance(plan.action, CreateMeeting)
+                        else f"以下の操作を承認しますか？\n\n```json\n{preview}\n```"
+                    )
                     self.jobs.notify(
                         job,
-                        f"以下の操作を承認しますか？\n\n```json\n{preview}\n```\n\n"
-                        f"同じスレッドで `承認 {job.id}` と返信してください。"
-                        f"（{self.settings.approval_minutes}分以内）",
+                        description,
                         outcome="awaiting_approval",
                     )
                     return True
                 if len(observations) >= self.settings.max_read_steps:
                     break
-                observations.append(self.actions.execute(job, plan))
+                result = self.actions.execute(job, plan)
+                if isinstance(plan.action, FindFree):
+                    # 日付・時刻・判定はPythonの計算結果から直接返す。AIに再編集させない。
+                    self.completion.finish(job, result, availability_reply(result))
+                    return True
+                observations.append(result)
             raise AgentError("step_limit", "参照回数の上限に達しました。依頼を絞ってください。")
         except AgentError as error:
             failed = job.transition(JobStatus.FAILED, error_code=error.code)

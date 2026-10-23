@@ -165,6 +165,7 @@ def test_unavailable_stream_falls_back_only_before_stream_created(harness: Harne
 )
 def test_approval_error_and_long_body_are_sent_atomically(harness: Harness, notice: str, text: str):
     client = Mock()
+    client.chat_postMessage.return_value = {"ts": "2000.000001"}
     messenger = SlackMessenger(client, harness.policy, harness.jobs)
     messenger.deliver(notice, harness.source, text)
     client.chat_startStream.assert_not_called()
@@ -211,4 +212,4 @@ def test_v1_database_migration_preserves_jobs_and_notifications(harness: Harness
     assert job and job.status == "succeeded"
     assert upgraded.pending_notifications()[0][2] == "保持する回答"
     with upgraded.connection() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4

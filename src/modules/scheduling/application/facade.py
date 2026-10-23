@@ -38,7 +38,10 @@ class SchedulingService:
         return self._write.execute(action, key)
 
     def prepare(self, action: CreateEvent | UpdateEvent) -> CreateEvent | UpdateEvent:
-        return self._authorization.prepare(action)
+        action = self._authorization.prepare(action)
+        return (
+            self._members.prepare_invitation(action) if isinstance(action, CreateEvent) else action
+        )
 
     def reconcile(self, action: object, key: str) -> dict[str, object] | None:
         return self._reconcile.execute(action, key)

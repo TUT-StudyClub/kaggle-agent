@@ -14,6 +14,7 @@ from modules.knowledge.public import (
 )
 from modules.planning.public import (
     WRITE_KINDS,
+    CreateMeeting,
     Plan,
 )
 from modules.scheduling.public import (
@@ -22,6 +23,8 @@ from modules.scheduling.public import (
     UpdateEvent,
 )
 from shared.errors import AgentError
+
+from .meetings import MeetingService
 
 
 class ActionService:
@@ -34,6 +37,7 @@ class ActionService:
         scheduling: SchedulingService,
         tools: ToolRegistry,
         activity: ActivityReporter,
+        meetings: MeetingService,
     ):
         self.settings = settings
         self.jobs = jobs
@@ -42,6 +46,7 @@ class ActionService:
         self.scheduling = scheduling
         self.tools = tools
         self.activity = activity
+        self.meetings = meetings
 
     def execute(self, job: Job, plan: Plan) -> dict[str, object]:
         action = plan.action
@@ -68,6 +73,10 @@ class ActionService:
 
     def prepare(self, job: Job, plan: Plan) -> Plan:
         action = plan.action
+        if isinstance(action, CreateMeeting):
+            if not self.tools.skillbook.permits("calendar.create"):
+                raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
+            action = self.meetings.prepare(action)
         if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
             mapped = self.jobs.mapping(job.message.source.thread_key)
             unresolved = self.jobs.unresolved_record(job.message.source.thread_key)

@@ -34,6 +34,8 @@ from modules.scheduling.public import (
 )
 from shared.domain.value_object import ValueObject
 
+from .meetings import CreateMeeting, ListAnnouncementChannels
+
 
 class Reply(ValueObject):
     kind: Literal["reply"] = "reply"
@@ -57,7 +59,9 @@ type Action = Annotated[
     | ListEvents
     | FindFree
     | CreateEvent
-    | UpdateEvent,
+    | UpdateEvent
+    | ListAnnouncementChannels
+    | CreateMeeting,
     Field(discriminator="kind"),
 ]
 
@@ -73,6 +77,7 @@ WRITE_KINDS = frozenset(
         "notion.update_block",
         "calendar.create",
         "calendar.update",
+        "meeting.create",
     }
 )
 

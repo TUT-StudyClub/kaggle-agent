@@ -87,7 +87,7 @@ def test_approval_preview_is_code_and_preserves_embedded_fences(harness: Harness
     assert text.count("```") == 2
     preview = text.split("```json\n", 1)[1].split("\n```", 1)[0]
     assert json.loads(preview) == action.model_dump(mode="json")
-    assert "`承認 " in text.split("\n```", 1)[1]
+    assert text.endswith("\n```")
     assert harness.knowledge.writes == 0
 
 
@@ -130,6 +130,10 @@ def test_approval_expires_and_unblocks_conversation(harness: Harness):
     harness.jobs.recover()
     job = harness.jobs.get(job_id)
     assert job and job.error_code == "approval_expired"
+    assert not job.write_started and harness.calendar.writes == 0
+    harness.agent.deliver_notifications()
+    assert "操作は実行していない" in harness.messenger.sent[-1]
+    assert "照合" not in harness.messenger.sent[-1]
 
 
 def test_follow_up_receives_last_event_id(harness: Harness):
