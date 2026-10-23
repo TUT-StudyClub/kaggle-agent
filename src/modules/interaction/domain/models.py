@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from shared.domain.value_object import ValueObject
 from shared.errors import AgentError
@@ -26,8 +26,16 @@ class Source(ValueObject):
 class IncomingMessage(ValueObject):
     event_id: str = Field(min_length=1)
     source: Source
-    text: str = Field(min_length=1, max_length=12000)
+    text: str = Field(max_length=12000)
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    addressing: Literal["direct", "mention", "followup"] = "direct"
+    message_ts: str | None = Field(default=None, pattern=r"^\d+\.\d+$")
+
+    @model_validator(mode="after")
+    def require_instruction_or_mention(self) -> IncomingMessage:
+        if not self.text.strip() and self.addressing != "mention":
+            raise ValueError("本文が必要です。")
+        return self
 
 
 class ApprovalReaction(ValueObject):
@@ -65,6 +73,7 @@ class JobStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    IGNORED = "ignored"
 
 
 class Job(ValueObject):
@@ -109,10 +118,12 @@ class Job(ValueObject):
                 JobStatus.AWAITING_APPROVAL,
                 JobStatus.SUCCEEDED,
                 JobStatus.FAILED,
+                JobStatus.IGNORED,
             },
             JobStatus.AWAITING_APPROVAL: {JobStatus.QUEUED, JobStatus.FAILED},
             JobStatus.SUCCEEDED: set(),
             JobStatus.FAILED: set(),
+            JobStatus.IGNORED: set(),
         }
         if target not in allowed[self.status]:
             raise AgentError("invalid_transition", "ジョブ状態の遷移が不正です。")

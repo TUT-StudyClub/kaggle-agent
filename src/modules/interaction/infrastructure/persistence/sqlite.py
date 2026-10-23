@@ -3,6 +3,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,7 +29,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         self.path = path
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 4:
+            if version > 5:
                 raise AgentError("database_version", "このバージョンではDBを開けません。")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -75,6 +76,14 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                         key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
                     );
                     PRAGMA user_version=4;
+                """)
+            if version < 5:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS thread_tracking (
+                        key TEXT PRIMARY KEY, stopped INTEGER NOT NULL,
+                        event_ts TEXT NOT NULL, last_stop_ts TEXT
+                    );
+                    PRAGMA user_version=5;
                 """)
         self.path.chmod(0o600)
 
@@ -124,7 +133,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                 SELECT payload FROM jobs j WHERE status='queued'
                 AND NOT EXISTS (
                     SELECT 1 FROM jobs other WHERE other.conversation_key=j.conversation_key
-                    AND other.status IN ('running','awaiting_approval')
+                    AND (other.status='running' OR (other.status='awaiting_approval'
+                        AND COALESCE(json_extract(j.payload,'$.message.addressing'),'direct')
+                            != 'followup'))
                 ) ORDER BY CASE WHEN json_extract(payload,'$.plan_json') IS NOT NULL
                     THEN 0 ELSE 1 END, updated_at LIMIT 1
             """).fetchone()
@@ -320,6 +331,8 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         return count
 
     def tracks(self, source: Source) -> bool:
+        if self.tracking_stopped(source):
+            return False
         with self.connection() as db:
             return (
                 db.execute(
@@ -328,6 +341,57 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                 ).fetchone()
                 is not None
             )
+
+    def tracking_stopped(self, source: Source) -> bool:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT stopped FROM thread_tracking WHERE key=?", (source.thread_key,)
+            ).fetchone()
+        return bool(row and row[0])
+
+    @staticmethod
+    def _message_time(message: IncomingMessage) -> str:
+        return message.message_ts or str(message.received_at.timestamp())
+
+    def set_tracking(self, message: IncomingMessage, *, stopped: bool) -> bool:
+        event_ts = self._message_time(message)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            # 再配信された古いメンションで、後から送られた !stop を取り消さない。
+            row = db.execute(
+                "SELECT event_ts,last_stop_ts FROM thread_tracking WHERE key=?",
+                (message.source.thread_key,),
+            ).fetchone()
+            if row and Decimal(event_ts) <= Decimal(row[0]):
+                return False
+            db.execute(
+                "INSERT INTO thread_tracking VALUES (?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET stopped=excluded.stopped, "
+                "event_ts=excluded.event_ts,last_stop_ts=excluded.last_stop_ts",
+                (
+                    message.source.thread_key,
+                    stopped,
+                    event_ts,
+                    event_ts if stopped else row[1] if row else None,
+                ),
+            )
+        return True
+
+    def accepts_followup(self, message: IncomingMessage) -> bool:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT stopped,last_stop_ts FROM thread_tracking WHERE key=?",
+                (message.source.thread_key,),
+            ).fetchone()
+        return not row or (
+            not row[0]
+            and (row[1] is None or Decimal(self._message_time(message)) > Decimal(row[1]))
+        )
+
+    def finish_silently(self, job: Job, outcome: str) -> None:
+        with self.connection() as db:
+            self._save(db, job)
+            self._audit(db, job, outcome)
 
     def context(self, source: Source) -> str:
         with self.connection() as db:
