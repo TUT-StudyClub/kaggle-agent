@@ -2,6 +2,7 @@ from pathlib import Path
 
 from slack_sdk import WebClient
 
+from modules.kaggle.public import KaggleService
 from modules.knowledge.public import KnowledgeService
 from modules.planning.public import Planner, SkillBook
 from modules.scheduling.public import SchedulingService
@@ -18,7 +19,13 @@ from .application.services.activity import ActivityReporter
 from .application.services.completion import JobCompletion
 from .application.services.jobs import JobManagement
 from .application.services.meetings import MeetingService
-from .application.services.tools import KnowledgeTool, MeetingTool, SchedulingTool, ToolRegistry
+from .application.services.tools import (
+    KaggleTool,
+    KnowledgeTool,
+    MeetingTool,
+    SchedulingTool,
+    ToolRegistry,
+)
 from .application.use_cases.deliver_notifications import DeliverNotificationsUseCase
 from .application.use_cases.process_job import ProcessJobUseCase
 from .application.use_cases.receive_message import ReceiveMessageUseCase
@@ -44,6 +51,7 @@ def build_agent(
     *,
     clock: Clock | None = None,
     tools: ToolRegistry | None = None,
+    kaggle: KaggleService | None = None,
     reminders: RemindScheduleUseCase | None = None,
     announcements: AnnouncementSender | None = None,
     meeting_receipts: MeetingRepository | None = None,
@@ -51,7 +59,13 @@ def build_agent(
     clock = clock or SystemClock()
     meetings = MeetingService(scheduling, announcements, meeting_receipts)
     tools = tools or ToolRegistry(
-        (KnowledgeTool(knowledge), SchedulingTool(scheduling), MeetingTool(meetings)), skillbook
+        (
+            KnowledgeTool(knowledge),
+            SchedulingTool(scheduling),
+            MeetingTool(meetings),
+            KaggleTool(kaggle),
+        ),
+        skillbook,
     )
     activity = ActivityReporter(messenger)
     actions = ActionService(
@@ -92,6 +106,7 @@ def build_interaction(
     clock: Clock | None = None,
     daily_schedule_reminder: DailyScheduleReminder | None = None,
     bot_user_id: str | None = None,
+    kaggle: KaggleService | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
     jobs = SQLiteJobRepository(database)
@@ -118,6 +133,7 @@ def build_interaction(
         reminders=reminders,
         announcements=SlackAnnouncementSender(client, policy.channel_ids, bot_user_id),
         meeting_receipts=jobs,
+        kaggle=kaggle,
     )
 
 

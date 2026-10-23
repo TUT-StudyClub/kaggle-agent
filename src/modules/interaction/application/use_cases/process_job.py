@@ -167,6 +167,10 @@ class ProcessJobUseCase:
                         observations=observations,
                         resources={
                             "requester_slack_user_id": job.message.source.user_id,
+                            "kaggle_may_write": (
+                                self.settings.kaggle_owner_user_id is not None
+                                and job.message.source.user_id == self.settings.kaggle_owner_user_id
+                            ),
                             "notion_pages": sorted(self.settings.notion_pages),
                             "notion_data_sources": sorted(
                                 self.settings.allowed_notion_data_sources

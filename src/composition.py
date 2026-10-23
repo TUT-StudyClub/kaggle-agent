@@ -9,6 +9,7 @@ from apps.slack.handlers.events import register_listeners
 from config import Settings
 from modules.interaction.composition import build_interaction
 from modules.interaction.public import InteractionFacade
+from modules.kaggle.composition import build_kaggle
 from modules.knowledge.composition import build_knowledge
 from modules.planning.composition import build_planning
 from modules.scheduling.composition import build_scheduling
@@ -67,6 +68,12 @@ def build(settings: Settings, stack: ExitStack) -> tuple[App, InteractionFacade]
         set(settings.allowed_notion_data_sources),
     )
     scheduling = build_scheduling(JsonHttp(calendar_client), notion_http, settings.calendars)
+    kaggle = build_kaggle(
+        settings.kaggle_workspace,
+        settings.kaggle_config_dir,
+        settings.kaggle_api_token.get_secret_value(),
+        settings.kaggle_owner_user_id,
+    )
     agent = build_interaction(
         settings.database,
         settings.agent_policy(),
@@ -78,6 +85,7 @@ def build(settings: Settings, stack: ExitStack) -> tuple[App, InteractionFacade]
         clock=clock,
         daily_schedule_reminder=settings.daily_schedule_reminder,
         bot_user_id=auth["user_id"],
+        kaggle=kaggle,
     )
     app = App(client=slack_client, token_verification_enabled=False)
     register_listeners(app, agent, auth["user_id"])

@@ -6,6 +6,7 @@ from modules.interaction.domain.models import (
     Job,
 )
 from modules.interaction.domain.repositories import JobRepository
+from modules.kaggle.public import WriteKaggle
 from modules.knowledge.public import (
     AppendPage,
     CreatePage,
@@ -50,6 +51,7 @@ class ActionService:
 
     def execute(self, job: Job, plan: Plan) -> dict[str, object]:
         action = plan.action
+        self._authorize(job, plan)
         activity = (
             Activity.WRITING
             if action.kind in WRITE_KINDS
@@ -63,16 +65,19 @@ class ActionService:
                 action,
                 self.messenger.permalink(job.message.source),
                 job.id,
+                source=job.message.source,
             )
             if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
                 page = result.get("page")
                 if isinstance(page, dict):
                     self.jobs.map_page(job.message.source.thread_key, str(page["id"]))
             return result
-        return self.tools.execute(action, "", job.id)
+        return self.tools.execute(action, "", job.id, source=job.message.source)
 
     def prepare(self, job: Job, plan: Plan) -> Plan:
         action = plan.action
+        self._authorize(job, plan)
+        self.tools.prepare(action, job.message.source)
         if isinstance(action, CreateMeeting):
             if not self.tools.skillbook.permits("calendar.create"):
                 raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
@@ -98,3 +103,13 @@ class ActionService:
             if action.parent_alias not in self.settings.notion_parents:
                 raise AgentError("unknown_parent", "Notion登録先の別名を指定してください。")
         return Plan(action=action)
+
+    def _authorize(self, job: Job, plan: Plan) -> None:
+        if isinstance(plan.action, WriteKaggle) and (
+            self.settings.kaggle_owner_user_id is None
+            or job.message.source.user_id != self.settings.kaggle_owner_user_id
+        ):
+            raise AgentError(
+                "kaggle_owner_only",
+                "Kaggleの提出・公開・削除・作成・実行・更新は、管理者本人だけが実行できるよ。",
+            )

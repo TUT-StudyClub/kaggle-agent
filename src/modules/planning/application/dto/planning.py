@@ -2,6 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from modules.kaggle.public import KaggleHelp, ReadKaggle, WriteKaggle
 from modules.knowledge.public import (
     AppendPage as AppendPage,
 )
@@ -61,7 +62,10 @@ type Action = Annotated[
     | CreateEvent
     | UpdateEvent
     | ListAnnouncementChannels
-    | CreateMeeting,
+    | CreateMeeting
+    | KaggleHelp
+    | ReadKaggle
+    | WriteKaggle,
     Field(discriminator="kind"),
 ]
 
@@ -78,6 +82,7 @@ WRITE_KINDS = frozenset(
         "calendar.create",
         "calendar.update",
         "meeting.create",
+        "kaggle.write",
     }
 )
 
