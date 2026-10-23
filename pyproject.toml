@@ -68,6 +68,7 @@ modules = [
   "modules.knowledge.domain",
   "modules.scheduling.domain",
   "modules.planning.domain",
+  "modules.kaggle.domain",
 ]
 
 [[tool.importlinter.contracts]]
@@ -105,6 +106,12 @@ name = "Interaction internals are private"
 type = "protected"
 protected_modules = ["modules.interaction.domain", "modules.interaction.application", "modules.interaction.infrastructure"]
 allowed_importers = ["modules.interaction.**"]
+
+[[tool.importlinter.contracts]]
+name = "Kaggle internals are private"
+type = "protected"
+protected_modules = ["modules.kaggle.domain", "modules.kaggle.application", "modules.kaggle.infrastructure"]
+allowed_importers = ["modules.kaggle.**"]
 
 [[tool.importlinter.contracts]]
 name = "Only application entry points assemble modules"
