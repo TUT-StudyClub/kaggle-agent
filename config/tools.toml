@@ -21,3 +21,8 @@ actions = ["calendar.list", "calendar.events", "calendar.free", "calendar.create
 enabled = true
 skill = "scheduling"
 actions = ["slack.channels", "meeting.create"]
+
+[tools.kaggle]
+enabled = true
+skill = "kaggle"
+actions = ["kaggle.help", "kaggle.read", "kaggle.write"]

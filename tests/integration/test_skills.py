@@ -150,7 +150,7 @@ def test_policy_skill_name_cannot_escape_skills_directory(tmp_path: Path):
 def test_default_skills_and_rules_load_outside_repository(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     book = load_skillbook()
-    assert {skill.name for skill in book.skills} == {"knowledge", "scheduling"}
+    assert {skill.name for skill in book.skills} == {"knowledge", "scheduling", "kaggle"}
     assert book.permits("notion.search") and book.permits("calendar.events")
     assert all(skill.rules for skill in book.skills)
 
