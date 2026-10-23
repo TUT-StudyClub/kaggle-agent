@@ -11,6 +11,7 @@ from modules.interaction.domain.models import IncomingMessage, Source
 from modules.interaction.infrastructure.persistence.sqlite import SQLiteJobRepository
 from modules.interaction.public import AgentPolicy
 from modules.interaction.public import InteractionFacade as Agent
+from modules.kaggle.public import KaggleService
 from modules.knowledge.composition import compose_knowledge
 from modules.knowledge.domain.models import Note, Page
 from modules.knowledge.public import KnowledgeRepository
@@ -214,6 +215,7 @@ class Harness:
     member_directory: MemberDirectory | None = None
     clock: Clock | None = None
     announcements: AnnouncementSender | None = None
+    kaggle: KaggleService | None = None
 
     def configure(
         self,
@@ -224,6 +226,7 @@ class Harness:
         tools: ToolRegistry | None = None,
         clock: Clock | None = None,
         announcements: AnnouncementSender | None = None,
+        kaggle: KaggleService | None = None,
     ) -> None:
         if policy is not None:
             self.policy = policy
@@ -235,6 +238,8 @@ class Harness:
             self.clock = clock
         if announcements is not None:
             self.announcements = announcements
+        if kaggle is not None:
+            self.kaggle = kaggle
         knowledge = compose_knowledge(self.knowledge)
         scheduling = compose_scheduling(
             self.calendar,
@@ -259,6 +264,7 @@ class Harness:
             clock=self.clock,
             announcements=self.announcements,
             meeting_receipts=self.jobs,
+            kaggle=self.kaggle,
         )
 
     def submit(self, text: str = "依頼", event_id: str = "event1") -> str:
