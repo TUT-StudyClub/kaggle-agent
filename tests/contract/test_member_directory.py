@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from modules.planning.public import Plan
+from modules.scheduling.application.services.member_mapping import MemberMappingService
 from modules.scheduling.composition import compose_scheduling
 from modules.scheduling.domain.models import CalendarMember, EventLabel
 from modules.scheduling.infrastructure.external_services.notion_members import NotionMemberDirectory
@@ -277,3 +278,45 @@ def test_unknown_label_in_db_is_reported(harness):
     service = compose_scheduling(harness.calendar, set(), member_directory=directory)
     with pytest.raises(AgentError, match="対象カレンダーにありません"):
         service.execute(ListCalendars(), "read")
+
+
+def test_calendar_email_aliases_are_parsed_and_remain_json_serializable():
+    member_row = row()
+    member_row["properties"]["Calendar Emails"] = {
+        "type": "rich_text",
+        "rich_text": [{"plain_text": "First@EXAMPLE.COM, second@example.com\nthird@example.com"}],
+    }
+
+    def handler(request):
+        value = schema() if request.method == "GET" else {"results": [member_row]}
+        if request.method == "GET":
+            value["properties"]["Calendar Emails"] = {"type": "rich_text"}
+        return httpx.Response(200, json=value)
+
+    with httpx.Client(
+        base_url="https://test.invalid/", transport=httpx.MockTransport(handler)
+    ) as client:
+        members = NotionMemberDirectory(JsonHttp(client), {"personal": SOURCE}).members("personal")
+    assert members[0].calendar_emails == {
+        "first@example.com",
+        "second@example.com",
+        "third@example.com",
+    }
+    json.dumps(members[0].model_dump(mode="json"))
+
+
+def test_duplicate_calendar_email_is_not_silently_assigned_to_first_person(harness):
+    directory = Mock(spec=NotionMemberDirectory)
+    directory.calendar_aliases = frozenset({"personal"})
+    directory.members.return_value = [
+        CalendarMember(
+            name="A", slack_user_id="U2", label_id="a", calendar_emails={"same@example.com"}
+        ),
+        CalendarMember(
+            name="B", slack_user_id="U3", label_id="b", calendar_emails={"SAME@example.com"}
+        ),
+    ]
+    service = MemberMappingService(member_directory=directory)
+    with pytest.raises(AgentError) as caught:
+        service.participant_users("personal", [harness.calendar.event("personal", "event")])
+    assert caught.value.code == "participant_mapping_conflict"

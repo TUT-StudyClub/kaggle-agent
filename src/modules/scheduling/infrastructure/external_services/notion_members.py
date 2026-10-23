@@ -1,3 +1,4 @@
+import re
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -36,6 +37,8 @@ class NotionMemberDirectory(MemberDirectory):
         path = f"data_sources/{self.data_sources[calendar_alias]}"
         schema = self.http.request("GET", path).get("properties", {})
         expected = {"Name": "title", "Slack User ID": "rich_text", "Calendar Label ID": "rich_text"}
+        if "Calendar Emails" in schema:
+            expected["Calendar Emails"] = "rich_text"
         if any(schema.get(name, {}).get("type") != kind for name, kind in expected.items()):
             raise AgentError(
                 "member_schema",
@@ -61,6 +64,12 @@ class NotionMemberDirectory(MemberDirectory):
                             slack_user_id=property_text(props, "Slack User ID"),
                             label_id=property_text(props, "Calendar Label ID"),
                             url=row.get("url", ""),
+                            calendar_emails=frozenset(
+                                filter(
+                                    None,
+                                    re.split(r"[,;\s]+", property_text(props, "Calendar Emails")),
+                                )
+                            ),
                         )
                     )
                 except ValidationError:

@@ -41,7 +41,7 @@ class ReadScheduleUseCase:
                                 label.model_dump() | {"slack_user_id": mapping.get(label.id)}
                                 for label in calendar.labels
                             ],
-                            "members": [m.model_dump() for m in members or []],
+                            "members": [m.model_dump(mode="json") for m in members or []],
                             "member_directory": members is not None,
                         }
                     )

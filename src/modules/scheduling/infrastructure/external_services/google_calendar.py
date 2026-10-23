@@ -81,6 +81,8 @@ class GoogleCalendarRepository(CalendarRepository):
         label_id = raw.get("eventLabelId") or None
         if label_id and labels is None:
             labels = self._labels(alias)
+        creator = raw.get("creator", {}).get("email") or None
+        guests = [a for a in raw.get("attendees", []) if not a.get("resource", False)]
         return Event(
             id=raw["id"],
             calendar_alias=alias,
@@ -93,6 +95,13 @@ class GoogleCalendarRepository(CalendarRepository):
             label_id=label_id,
             label=(labels or {}).get(label_id) if label_id else None,
             color_id=raw.get("colorId") or None,
+            creator_email=creator,
+            guest_emails=frozenset(a["email"] for a in guests if a.get("email")),
+            participants_complete=(
+                bool(creator)
+                and not raw.get("attendeesOmitted", False)
+                and all(a.get("email") for a in guests)
+            ),
             editable=(
                 raw.get("organizer", {}).get("self", False)
                 and not raw.get("locked", False)

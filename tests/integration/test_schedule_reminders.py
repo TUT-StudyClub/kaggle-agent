@@ -16,6 +16,7 @@ from modules.interaction.infrastructure.messaging.slack_reminders import SlackRe
 from modules.interaction.infrastructure.persistence.sqlite import SQLiteJobRepository
 from modules.interaction.public import DailyScheduleReminder
 from modules.scheduling.composition import compose_scheduling
+from modules.scheduling.domain.models import CalendarMember
 from modules.scheduling.infrastructure.external_services.google_calendar import (
     GoogleCalendarRepository,
 )
@@ -41,6 +42,8 @@ def event(title="キックオフ", label="team", **changes):
         "start": {"dateTime": "2026-10-23T19:00:00+09:00"},
         "end": {"dateTime": "2026-10-23T20:00:00+09:00"},
         "eventLabelId": label,
+        "creator": {"email": "host@example.com"},
+        "attendees": [{"email": "guest@example.com", "responseStatus": "needsAction"}],
         "htmlLink": "https://calendar.google.com/event/test",
         **changes,
     }
@@ -52,6 +55,10 @@ def reminder(tmp_path):
     config = DailyScheduleReminder(calendar_alias="club", label_id="team", channel_id="C1")
     slack = create_autospec(WebClient, instance=True)
     slack.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
+    slack.conversations_members.return_value = {"members": ["U1", "U2", "U3", "UBOT"]}
+    slack.users_info.side_effect = lambda *, user: {
+        "user": {"id": user, "is_bot": user == "UBOT", "deleted": False},
+    }
     requests = []
     pages = [[event()]]
 
@@ -80,6 +87,27 @@ def reminder(tmp_path):
         base_url="https://test.invalid/", transport=httpx.MockTransport(response)
     ) as client:
         directory = Mock()
+        directory.calendar_aliases = frozenset({"club"})
+        directory.members.return_value = [
+            CalendarMember(
+                name="招待者",
+                slack_user_id="U1",
+                label_id="a",
+                calendar_emails={"host@example.com"},
+            ),
+            CalendarMember(
+                name="ゲスト",
+                slack_user_id="U2",
+                label_id="b",
+                calendar_emails={"guest@example.com", "alias@example.com"},
+            ),
+            CalendarMember(
+                name="メンバー",
+                slack_user_id="U3",
+                label_id="c",
+                calendar_emails={"third@example.com"},
+            ),
+        ]
         scheduling = compose_scheduling(
             GoogleCalendarRepository(JsonHttp(client), {"club": "calendar-id"}),
             set(),
@@ -98,8 +126,6 @@ def reminder(tmp_path):
             )
 
         yield restart(), restart, clock, slack, pages, requests, path
-        directory.assert_not_called()
-        assert not directory.method_calls
 
 
 def test_daily_notification_uses_jst_exact_label_and_persists_after_restart(reminder):
@@ -258,11 +284,15 @@ def test_calendar_title_cannot_inject_slack_mentions(reminder):
     assert "&lt;!channel&gt;" in text
 
 
-def test_root_composition_wires_reminder_without_ai_or_notion(tmp_path, monkeypatch, harness):
+def test_root_composition_wires_reminder_and_identity_mapping_without_ai(
+    tmp_path, monkeypatch, harness
+):
     clock = ReminderClock()
     slack = create_autospec(WebClient, instance=True)
     slack.auth_test.return_value = {"team_id": "T1", "user_id": "UBOT"}
     slack.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
+    slack.conversations_members.return_value = {"members": ["U1", "U2"]}
+    slack.users_info.side_effect = lambda *, user: {"user": {"id": user, "is_bot": False}}
     planning = Mock(skillbook=harness.skillbook)
     monkeypatch.setattr(composition, "build_clock", lambda: clock)
     monkeypatch.setattr(composition, "build_planning", lambda *args, **kwargs: planning)
@@ -273,6 +303,34 @@ def test_root_composition_wires_reminder_without_ai_or_notion(tmp_path, monkeypa
 
     def response(request):
         requests.append(request)
+        if request.url.host == "api.notion.com":
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "properties": {
+                            "Name": {"type": "title"},
+                            "Slack User ID": {"type": "rich_text"},
+                            "Calendar Label ID": {"type": "rich_text"},
+                            "Calendar Emails": {"type": "rich_text"},
+                        }
+                    },
+                )
+            rows = []
+            for name, user, label, email in [
+                ("招待者", "U1", "a", "host@example.com"),
+                ("ゲスト", "U2", "b", "guest@example.com"),
+            ]:
+                props = {}
+                for column, kind, value in [
+                    ("Name", "title", name),
+                    ("Slack User ID", "rich_text", user),
+                    ("Calendar Label ID", "rich_text", label),
+                    ("Calendar Emails", "rich_text", email),
+                ]:
+                    props[column] = {"type": kind, kind: [{"plain_text": value}]}
+                rows.append({"properties": props})
+            return httpx.Response(200, json={"results": rows, "has_more": False})
         assert request.url.host == "www.googleapis.com" and request.method == "GET"
         return httpx.Response(
             200, json={"items": [event()]} if request.url.path.endswith("/events") else {}
@@ -290,7 +348,12 @@ def test_root_composition_wires_reminder_without_ai_or_notion(tmp_path, monkeypa
         team_id="T1",
         user_ids={"U1"},
         channel_ids={"C1"},
-        calendars={"club": {"id": "calendar"}},
+        calendars={
+            "club": {
+                "id": "calendar",
+                "member_data_source_id": "00000000-0000-0000-0000-000000000001",
+            }
+        },
         database=tmp_path / "agent.sqlite3",
         google_token_file=token_file,
         slack_bot_token="test",
@@ -304,6 +367,7 @@ def test_root_composition_wires_reminder_without_ai_or_notion(tmp_path, monkeypa
         _, agent = composition.build(settings, stack)
         agent.remind_schedule()
     slack.chat_postMessage.assert_called_once()
+    assert "<!channel>" in slack.chat_postMessage.call_args.kwargs["text"]
     planning.plan.assert_not_called()
     assert requests
 
@@ -327,4 +391,103 @@ def test_sender_rejects_channel_outside_allowlist_before_posting(reminder):
     _, _, _, slack, _, _, _ = reminder
     with pytest.raises(AgentError, match="許可範囲外"):
         SlackReminderSender(slack, frozenset({"C1"})).send("COTHER", "予定")
+    slack.chat_postMessage.assert_not_called()
+
+
+def test_creator_and_all_invited_guests_mention_channel(reminder):
+    usecase, _, _, slack, pages, _, _ = reminder
+    pages[:] = [
+        [
+            event(
+                attendees=[
+                    {"email": "host@example.com", "responseStatus": "accepted"},
+                    {"email": "guest@example.com", "responseStatus": "needsAction"},
+                    {"email": "third@example.com", "responseStatus": "tentative", "optional": True},
+                    {"email": "room@example.com", "resource": True},
+                ]
+            )
+        ]
+    ]
+    usecase.execute()
+    text = slack.chat_postMessage.call_args.kwargs["text"]
+    assert text.count("<!channel>") == 1
+    assert "参加者: <!channel>" in text
+    assert "<@U1>" not in text
+
+
+def test_partial_events_mention_each_events_participants_without_union_broadcast(reminder):
+    usecase, _, _, slack, pages, _, _ = reminder
+    pages[:] = [
+        [event("打合せA"), event("打合せB", creator={"email": "third@example.com"}, attendees=[])]
+    ]
+    usecase.execute()
+    text = slack.chat_postMessage.call_args.kwargs["text"]
+    assert "<!channel>" not in text
+    first, second = text.split("打合せB")
+    assert "参加者: <@U1> <@U2>" in first
+    assert "参加者: <@U3>" in second
+    assert "<@UBOT>" not in text
+
+
+def test_explicit_alias_and_case_normalization_deduplicate_participants(reminder):
+    usecase, _, _, slack, pages, _, _ = reminder
+    pages[:] = [
+        [
+            event(
+                creator={"email": "HOST@EXAMPLE.COM"},
+                attendees=[
+                    {"email": "alias@example.com"},
+                    {"email": "Guest@Example.com"},
+                    {"email": "host@example.com"},
+                ],
+            )
+        ]
+    ]
+    usecase.execute()
+    text = slack.chat_postMessage.call_args.kwargs["text"]
+    assert text.count("<@U1>") == 1 and text.count("<@U2>") == 1
+    assert "<!channel>" not in text
+
+
+@pytest.mark.parametrize(
+    "changes,code",
+    [
+        ({"creator": {}}, "calendar_participants_incomplete"),
+        ({"attendeesOmitted": True}, "calendar_participants_incomplete"),
+        ({"attendees": [{}]}, "calendar_participants_incomplete"),
+        ({"attendees": [{"email": "unknown@example.com"}]}, "participant_not_found"),
+    ],
+)
+def test_unknown_or_incomplete_identity_stops_before_reserving_or_sending(
+    reminder, changes, code, caplog
+):
+    usecase, _, _, slack, pages, _, path = reminder
+    pages[:] = [[event(**changes)]]
+    usecase.execute()
+    slack.chat_postMessage.assert_not_called()
+    assert code in caplog.text
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM schedule_reminders").fetchall() == []
+
+
+def test_channel_membership_read_failure_does_not_post_or_reserve(reminder, caplog):
+    usecase, _, _, slack, _, _, path = reminder
+    slack.conversations_members.side_effect = OSError("private-error")
+    usecase.execute()
+    slack.chat_postMessage.assert_not_called()
+    assert "slack_members_network" in caplog.text and "private-error" not in caplog.text
+    with sqlite3.connect(path) as db:
+        assert not db.execute("SELECT * FROM schedule_reminders").fetchall()
+
+
+def test_membership_read_crossing_midnight_does_not_send_previous_day(reminder):
+    usecase, _, clock, slack, _, _, _ = reminder
+    clock.value = "2026-10-23T23:59:59+09:00"
+
+    def profile(*, user):
+        clock.value = "2026-10-24T00:00:01+09:00"
+        return {"user": {"id": user, "is_bot": user == "UBOT"}}
+
+    slack.users_info.side_effect = profile
+    usecase.execute()
     slack.chat_postMessage.assert_not_called()

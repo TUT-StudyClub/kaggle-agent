@@ -29,6 +29,9 @@ class SchedulingService:
     def events_for_label(self, alias: str, label_id: str, period: TimeRange) -> list[Event]:
         return self._read.events_for_label(alias, label_id, period)
 
+    def participant_users(self, alias: str, events: list[Event]) -> dict[str, frozenset[str]]:
+        return self._members.participant_users(alias, events)
+
     def execute(self, action: object, key: str) -> dict[str, object]:
         if isinstance(action, (ListCalendars, ListEvents, FindFree)):
             return self._read.execute(action, key)

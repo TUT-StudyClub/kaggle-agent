@@ -381,3 +381,26 @@ def test_runtime_starts_reminders_in_a_separate_thread(tmp_path, monkeypatch):
     for _, thread in workers:
         thread.start.assert_called_once()
         thread.join.assert_called_once()
+
+
+def test_reminder_diagnostics_reports_users_read_requirement_without_posting(tmp_path, monkeypatch):
+    from modules.interaction.public import DailyScheduleReminder
+
+    config = settings(tmp_path).model_copy(
+        update={
+            "daily_schedule_reminder": DailyScheduleReminder(
+                calendar_alias="club",
+                label_id="team",
+                channel_id="C1",
+            )
+        }
+    )
+    client = create_autospec(WebClient, instance=True)
+    client.auth_test.return_value = {"team_id": "T123", "user_id": "UBOT"}
+    client.users_info.side_effect = OSError("private-error")
+    monkeypatch.setattr("diagnostics.WebClient", lambda **kwargs: client)
+    with pytest.raises(AgentError) as caught:
+        _slack(config)
+    assert caught.value.code == "slack_members_permission"
+    assert "users:read" in caught.value.message and "private-error" not in str(caught.value)
+    client.chat_postMessage.assert_not_called()

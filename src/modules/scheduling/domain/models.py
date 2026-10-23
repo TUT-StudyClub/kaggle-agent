@@ -1,6 +1,7 @@
+import re
 from datetime import datetime, timedelta
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from shared.domain.value_object import ValueObject
 
@@ -30,6 +31,15 @@ class CalendarMember(ValueObject):
     slack_user_id: str = Field(pattern=r"^[UW][A-Z0-9]+$")
     label_id: str = Field(min_length=1)
     url: str = ""
+    calendar_emails: frozenset[str] = frozenset()
+
+    @field_validator("calendar_emails")
+    @classmethod
+    def valid_emails(cls, values: frozenset[str]) -> frozenset[str]:
+        emails = frozenset(value.strip().lower() for value in values)
+        if any(not re.fullmatch(r"[^@\s]+@[^@\s]+", email) for email in emails):
+            raise ValueError("Calendar Emailsにはメールアドレスを指定してください")
+        return emails
 
 
 class Calendar(ValueObject):
@@ -54,6 +64,9 @@ class Event(ValueObject):
     label_id: str | None = None
     label: EventLabel | None = None
     color_id: str | None = None
+    creator_email: str | None = None
+    guest_emails: frozenset[str] = frozenset()
+    participants_complete: bool = False
 
 
 class EventDraft(ValueObject):

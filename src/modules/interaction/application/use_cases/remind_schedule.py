@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
 
 
-def reminder_text(day: datetime, events: list[Event]) -> str:
+def reminder_text(
+    day: datetime,
+    events: list[Event],
+    participants: dict[str, frozenset[str]],
+    channel_members: frozenset[str],
+) -> str:
     def start(event: Event) -> datetime:
         value = datetime.fromisoformat(event.start)
         return value.replace(tzinfo=JST) if value.tzinfo is None else value.astimezone(JST)
@@ -37,6 +42,14 @@ def reminder_text(day: datetime, events: list[Event]) -> str:
             lines.append(f"• {when} {title} <{url}|予定を開く>")
         else:
             lines.append(f"• {when} {title}")
+        users = participants[event.id] & channel_members
+        mentions = (
+            "<!channel>"
+            if channel_members and users == channel_members
+            else " ".join(f"<@{user_id}>" for user_id in sorted(users))
+        )
+        if mentions:
+            lines.append(f"  参加者: {mentions}")
     return "\n".join(lines)
 
 
@@ -82,10 +95,16 @@ class RemindScheduleUseCase:
                 self.config.label_id,
                 TimeRange(start=start, end=start + timedelta(days=1)),
             )
-            # 読み取りが日付をまたいだ場合、前日の予定を翌日に投稿しない。
+            text = ""
+            if events:
+                participants = self.scheduling.participant_users(self.config.calendar_alias, events)
+                members = self.sender.human_members(self.config.channel_id)
+                if not members:
+                    raise AgentError("channel_members_empty", "通知先のメンバーを確認できません。")
+                text = reminder_text(now, events, participants, members)
+            # Calendar・Member DB・Slackの読取中に日付が変わっても前日分を投稿しない。
             if self.clock.now().astimezone(JST).date() != now.date():
                 return
-            text = reminder_text(now, events) if events else ""
             if len(text) > 35000:
                 raise AgentError("reminder_too_large", "チーム予定の通知が長すぎます。")
             if not self.repository.reserve_reminder(key, self.clock.timestamp(), empty=not events):

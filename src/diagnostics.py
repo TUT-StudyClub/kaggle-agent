@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from pydantic import ValidationError
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackClientError
 
 from config import Settings
 from shared.domain.value_object import ValueObject
@@ -177,6 +178,14 @@ def _slack(settings: Settings) -> None:
     auth = client.auth_test()
     if auth["team_id"] != settings.team_id:
         raise AgentError("wrong_workspace", "Slack Botのワークスペースが設定と一致しません。")
+    if settings.daily_schedule_reminder is not None:
+        try:
+            client.users_info(user=auth["user_id"])
+        except SlackClientError, OSError:
+            raise AgentError(
+                "slack_members_permission",
+                "定期通知にはusers:readが必要です。権限を追加してAppを再インストールしてください。",
+            ) from None
     for channel in sorted(settings.channel_ids):
         raw = client.conversations_info(channel=channel)["channel"]
         if raw.get("is_archived") or (not raw.get("is_im") and not raw.get("is_member")):

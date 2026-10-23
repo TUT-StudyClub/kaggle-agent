@@ -19,6 +19,7 @@
       "bot": [
         "app_mentions:read",
         "chat:write",
+        "users:read",
         "channels:history",
         "channels:read",
         "groups:history",
