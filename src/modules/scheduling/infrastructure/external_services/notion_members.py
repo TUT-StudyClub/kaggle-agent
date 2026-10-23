@@ -18,6 +18,14 @@ def property_text(props: dict, name: str) -> str:
     ).strip()
 
 
+def calendar_emails(props: dict) -> frozenset[str]:
+    text = property_text(props, "Calendar Emails")
+    # Notionでメールの一覧を箇条書きに整えても、行頭の記号をアドレスに含めない。
+    # メール本文の一部を推測で抽出せず、対応している区切り・箇条書きだけを処理する。
+    text = re.sub(r"(?m)^\s*(?:[•・]\s*|[-*]\s+)", "", text)
+    return frozenset(filter(None, re.split(r"[,;\s]+", text)))
+
+
 class NotionMemberDirectory(MemberDirectory):
     """設定済みMember DBの対応列だけを参照する。行・スキーマは変更しない。"""
 
@@ -64,15 +72,19 @@ class NotionMemberDirectory(MemberDirectory):
                             slack_user_id=property_text(props, "Slack User ID"),
                             label_id=property_text(props, "Calendar Label ID"),
                             url=row.get("url", ""),
-                            calendar_emails=frozenset(
-                                filter(
-                                    None,
-                                    re.split(r"[,;\s]+", property_text(props, "Calendar Emails")),
-                                )
-                            ),
+                            calendar_emails=calendar_emails(props),
                         )
                     )
-                except ValidationError:
+                except ValidationError as error:
+                    if any(
+                        detail["loc"] and detail["loc"][0] == "calendar_emails"
+                        for detail in error.errors(include_input=False)
+                    ):
+                        raise AgentError(
+                            "member_email_invalid",
+                            "Member DBのCalendar Emailsに不備があります。"
+                            "メールアドレスを箇条書き・カンマ・改行で区切って登録してください。",
+                        ) from None
                     raise AgentError(
                         "member_mapping_invalid",
                         "Member DBの氏名・SlackユーザーID・ラベルIDに不備があります。"

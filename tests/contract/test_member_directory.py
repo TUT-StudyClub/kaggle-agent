@@ -280,11 +280,19 @@ def test_unknown_label_in_db_is_reported(harness):
         service.execute(ListCalendars(), "read")
 
 
-def test_calendar_email_aliases_are_parsed_and_remain_json_serializable():
+@pytest.mark.parametrize(
+    "emails",
+    [
+        "First@EXAMPLE.COM, second@example.com\nthird@example.com",
+        "  • First@EXAMPLE.COM\n  • second@example.com\n  • third@example.com",
+        "- First@EXAMPLE.COM\n* second@example.com\n・third@example.com",
+    ],
+)
+def test_calendar_email_aliases_are_parsed_and_remain_json_serializable(emails):
     member_row = row()
     member_row["properties"]["Calendar Emails"] = {
         "type": "rich_text",
-        "rich_text": [{"plain_text": "First@EXAMPLE.COM, second@example.com\nthird@example.com"}],
+        "rich_text": [{"plain_text": emails}],
     }
 
     def handler(request):
@@ -303,6 +311,66 @@ def test_calendar_email_aliases_are_parsed_and_remain_json_serializable():
         "third@example.com",
     }
     json.dumps(members[0].model_dump(mode="json"))
+
+
+def test_bulleted_mailto_spans_do_not_block_label_based_schedule_reads(harness):
+    member_row = row()
+    # 実際のNotionと同じく、改行・次の箇条書き記号がmailtoのspan内に入る形を再現する。
+    member_row["properties"]["Calendar Emails"] = {
+        "type": "rich_text",
+        "rich_text": [
+            {"plain_text": "  • "},
+            {"plain_text": "first@example.com\n  • ", "href": "mailto:first@example.com"},
+            {"plain_text": "second@example.com", "href": "mailto:second@example.com"},
+        ],
+    }
+
+    def handler(request):
+        value = schema() if request.method == "GET" else {"results": [member_row]}
+        if request.method == "GET":
+            value["properties"]["Calendar Emails"] = {"type": "rich_text"}
+        return httpx.Response(200, json=value)
+
+    base = harness.calendar.event("personal", "event-a")
+    harness.calendar.stored["event-a"] = base.model_copy(update={"label_id": "label-a"})
+    with httpx.Client(
+        base_url="https://test.invalid/", transport=httpx.MockTransport(handler)
+    ) as client:
+        service = compose_scheduling(
+            harness.calendar,
+            set(),
+            member_directory=NotionMemberDirectory(JsonHttp(client), {"personal": SOURCE}),
+        )
+        result = service.execute(ListEvents(calendar_alias="personal", period=period()), "read")
+    events = result["events"]
+    assert isinstance(events, list)
+    assert events[0]["slack_user_id"] == "U2"
+    assert set(events[0]["member"]["calendar_emails"]) == {
+        "first@example.com",
+        "second@example.com",
+    }
+
+
+@pytest.mark.parametrize("value", ["not-an-email", "first@example.com extra-text"])
+def test_invalid_calendar_email_reports_the_email_column_without_including_values(value):
+    member_row = row()
+    member_row["properties"]["Calendar Emails"] = {
+        "type": "rich_text",
+        "rich_text": [{"plain_text": value}],
+    }
+
+    def handler(request):
+        payload = schema() if request.method == "GET" else {"results": [member_row]}
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(
+        base_url="https://test.invalid/", transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(AgentError) as caught:
+            NotionMemberDirectory(JsonHttp(client), {"personal": SOURCE}).members("personal")
+    assert caught.value.code == "member_email_invalid"
+    assert "Calendar Emails" in caught.value.message
+    assert value not in caught.value.message
 
 
 def test_duplicate_calendar_email_is_not_silently_assigned_to_first_person(harness):
