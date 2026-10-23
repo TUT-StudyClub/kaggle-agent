@@ -1,8 +1,10 @@
 # Slack AIエージェント
 
-NotionとGoogle CalendarをSlackから操作する、個人用アシスタントです。
-Codex CLIが質問に応じてNotion・Google Calendar・Webを調べ、Pythonが操作を検証・実行します。
+Notion・Google Calendar・KaggleをSlackから操作するアシスタントです。
+Codex CLIが質問に応じて情報を調べ、Pythonが操作を検証・実行します。
 書き込みは内容を提示し、Slackで承認を受けてから実行します。
+Kaggleの認証は共通で使い、提出・公開・削除・作成・実行・更新は
+`KAGGLE_OWNER_USER_ID`に設定した本人だけが依頼できます。他の利用者は検索・閲覧・取得のみ可能です。
 
 ## セットアップ
 
