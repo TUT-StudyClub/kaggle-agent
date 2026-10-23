@@ -54,6 +54,7 @@ def load_skillbook(
     )
     return SkillBook(
         rules=(rules_root / "common.md").read_text(encoding="utf-8").strip(),
+        response_rules=(rules_root / "response.md").read_text(encoding="utf-8").strip(),
         skills=skills,
         policy=policy,
         research_rules=(

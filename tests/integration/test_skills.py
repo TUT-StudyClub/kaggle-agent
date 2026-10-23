@@ -190,7 +190,7 @@ def test_shared_research_rules_are_generic_and_keep_source_selection():
 def test_live_web_search_requires_nonempty_research_rules(tmp_path, content):
     rules = tmp_path / "rules"
     rules.mkdir()
-    for name in ("common.md", "knowledge.md"):
+    for name in ("common.md", "knowledge.md", "response.md"):
         (rules / name).write_text("制約")
     if content is not None:
         (rules / "research.md").write_text(content)
@@ -204,7 +204,7 @@ def test_live_web_search_requires_nonempty_research_rules(tmp_path, content):
 def test_disabled_web_search_does_not_load_or_advertise_research(tmp_path):
     rules = tmp_path / "rules"
     rules.mkdir()
-    for name in ("common.md", "knowledge.md"):
+    for name in ("common.md", "knowledge.md", "response.md"):
         (rules / name).write_text("制約")
     write_skill(tmp_path)
     book = load_skillbook(tmp_path, write_policy(tmp_path), rules_root=rules)
@@ -217,6 +217,7 @@ def test_prompt_groups_rules_instructions_and_enabled_operations_by_skill(tmp_pa
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "common.md").write_text("共通の制約")
+    (rules / "response.md").write_text("応答判定の制約")
     for name in ("knowledge", "scheduling"):
         write_skill(tmp_path, name=name, body=f"{name}の手順")
         (rules / f"{name}.md").write_text(f"{name}の制約")
@@ -248,6 +249,7 @@ def test_disabled_skill_rules_and_instructions_are_not_loaded(tmp_path: Path):
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "common.md").write_text("共通の制約")
+    (rules / "response.md").write_text("応答判定の制約")
     (rules / "knowledge.md").write_text("無効なルールを読まない")
     write_skill(tmp_path, body="無効な手順を読まない")
     book = load_skillbook(tmp_path, write_policy(tmp_path, enabled=False), rules_root=rules)
@@ -260,14 +262,14 @@ def test_disabled_skill_rules_and_instructions_are_not_loaded(tmp_path: Path):
     ).skills
 
 
-@pytest.mark.parametrize("filename", ["common.md", "knowledge.md"])
+@pytest.mark.parametrize("filename", ["common.md", "knowledge.md", "response.md"])
 @pytest.mark.parametrize("content", [None, " \n\t"])
 def test_missing_or_empty_required_rules_are_rejected(
     tmp_path: Path, filename: str, content: str | None
 ):
     rules = tmp_path / "rules"
     rules.mkdir()
-    for name in ("common.md", "knowledge.md"):
+    for name in ("common.md", "knowledge.md", "response.md"):
         (rules / name).write_text("制約")
     target = rules / filename
     target.unlink() if content is None else target.write_text(content)

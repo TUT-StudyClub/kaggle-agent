@@ -15,7 +15,14 @@ from modules.knowledge.composition import compose_knowledge
 from modules.knowledge.domain.models import Note, Page
 from modules.knowledge.public import KnowledgeRepository
 from modules.planning.infrastructure.skills import load_skillbook
-from modules.planning.public import Plan, Planner, PlanningRequest, SkillBook
+from modules.planning.public import (
+    Plan,
+    Planner,
+    PlanningRequest,
+    ResponseDecision,
+    ResponseRequest,
+    SkillBook,
+)
 from modules.scheduling.composition import compose_scheduling
 from modules.scheduling.domain.models import Calendar, Event, EventDraft, TimeRange
 from modules.scheduling.domain.repositories import MemberDirectory
@@ -28,6 +35,15 @@ class ScriptedPlanner(Planner):
     def __init__(self):
         self.steps: list[Plan | AgentError] = []
         self.requests: list[PlanningRequest] = []
+        self.response_requests: list[ResponseRequest] = []
+        self.response_steps: list[bool | AgentError] = []
+
+    def check_response(self, request: ResponseRequest) -> ResponseDecision:
+        self.response_requests.append(request)
+        step = self.response_steps.pop(0)
+        if isinstance(step, AgentError):
+            raise step
+        return ResponseDecision(should_respond=step)
 
     def plan(self, request: PlanningRequest) -> Plan:
         self.requests.append(request)
@@ -43,6 +59,7 @@ class FakeMessenger(Messenger):
         self.thread_reads = 0
         self.unavailable = False
         self.activities: list[Activity] = []
+        self.thread_text = "[]"
 
     def status(self, source: Source, activity: Activity) -> None:
         self.activities.append(activity)
@@ -54,7 +71,7 @@ class FakeMessenger(Messenger):
 
     def thread(self, source: Source) -> str:
         self.thread_reads += 1
-        return "許可された利用者の会話"
+        return self.thread_text
 
     def permalink(self, source: Source) -> str:
         return "https://example.slack.com/archives/C1/p1000000001"

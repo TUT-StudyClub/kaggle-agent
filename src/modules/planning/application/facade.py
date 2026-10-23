@@ -1,5 +1,6 @@
 from ..domain.skills import SkillBook
 from .dto.planning import Plan, PlanningRequest
+from .dto.response import ResponseDecision, ResponseRequest
 from .ports.planner import Planner
 from .use_cases.evaluate import evaluate_japanese
 from .use_cases.probe import ProbePlanningUseCase
@@ -22,6 +23,9 @@ class PlanningService(Planner):
 
     def plan(self, request: PlanningRequest) -> Plan:
         return self._planner.plan(request)
+
+    def check_response(self, request: ResponseRequest) -> ResponseDecision:
+        return self._planner.check_response(request)
 
     def probe(self) -> float:
         return self._probe.execute()

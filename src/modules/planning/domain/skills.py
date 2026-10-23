@@ -34,6 +34,7 @@ class ToolPolicy(ValueObject):
 
 class SkillBook(ValueObject):
     rules: str = Field(min_length=1)
+    response_rules: str = Field(min_length=1)
     skills: tuple[Skill, ...]
     policy: ToolPolicy
     research_rules: str = ""
