@@ -167,6 +167,14 @@ def test_competition_lookup_guidance_reaches_planner():
     assert "「DBになかった」で終了しません" in planner.instructions
 
 
+def test_guest_event_editing_guidance_reaches_planner():
+    prompt = load_skillbook().prompt()
+    assert "`editable=true`の予定だけ変更案" in prompt
+    assert "招待ゲスト付きでも" in prompt
+    assert "ゲスト一覧・出欠回答・場所・会議情報は保持" in prompt
+    assert "招待者のいる予定、繰り返し予定は" not in prompt
+
+
 def test_shared_research_rules_are_generic_and_keep_source_selection():
     book = load_skillbook()
     assert not any(word in book.research_rules for word in ("Kaggle", "コンペ", "提出"))

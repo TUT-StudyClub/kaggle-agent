@@ -105,7 +105,6 @@ class GoogleCalendarRepository(CalendarRepository):
             editable=(
                 raw.get("organizer", {}).get("self", False)
                 and not raw.get("locked", False)
-                and not raw.get("attendees")
                 and raw.get("eventType", "default") == "default"
                 and not raw.get("recurringEventId")
                 and not raw.get("recurrence")
@@ -217,6 +216,7 @@ class GoogleCalendarRepository(CalendarRepository):
             raise UncertainWrite()
 
     def update(self, alias: str, event: Event, draft: EventDraft, key: str) -> Event:
+        # PATCHで指定しないゲスト・出欠回答・会議情報などは既存の値を保持する。
         self.http.request(
             "PATCH",
             self._path(alias, event.id),
