@@ -43,7 +43,7 @@ class GoogleCalendarRepository(CalendarRepository):
         return {
             label["id"]: EventLabel(
                 id=label["id"],
-                name=label.get("name", ""),
+                name=label.get("name") or "",
                 background_color=label.get("backgroundColor", ""),
             )
             for label in raw.get("labelProperties", {}).get("eventLabels", [])

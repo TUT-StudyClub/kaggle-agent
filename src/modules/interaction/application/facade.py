@@ -6,6 +6,7 @@ from modules.interaction.application.use_cases.deliver_notifications import (
 from modules.interaction.application.use_cases.process_job import ProcessJobUseCase
 from modules.interaction.application.use_cases.receive_message import ReceiveMessageUseCase
 from modules.interaction.application.use_cases.reconcile_job import ReconcileJobUseCase
+from modules.interaction.application.use_cases.remind_schedule import RemindScheduleUseCase
 from modules.interaction.domain.models import IncomingMessage, Source
 
 
@@ -17,12 +18,18 @@ class InteractionFacade:
         reconcile: ReconcileJobUseCase,
         notifications: DeliverNotificationsUseCase,
         management: JobManagement,
+        reminders: RemindScheduleUseCase | None = None,
     ):
         self._receive = receive
         self._process = process
         self._reconcile = reconcile
         self._notifications = notifications
         self._management = management
+        self._reminders = reminders
+
+    def remind_schedule(self) -> None:
+        if self._reminders is not None:
+            self._reminders.execute()
 
     def receive(self, message: IncomingMessage) -> str | None:
         return self._receive.execute(message)

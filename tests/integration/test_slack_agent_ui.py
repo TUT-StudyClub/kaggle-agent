@@ -211,4 +211,4 @@ def test_v1_database_migration_preserves_jobs_and_notifications(harness: Harness
     assert job and job.status == "succeeded"
     assert upgraded.pending_notifications()[0][2] == "保持する回答"
     with upgraded.connection() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3

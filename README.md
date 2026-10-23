@@ -38,6 +38,20 @@ task init
 許可したDMまたは`@Bot`へのメンションで依頼します。
 書き込みは提示された内容を確認し、同じスレッドで`承認 <ジョブID>`と返信します。
 
+チーム予定を毎朝Slackに通知する場合は、`.env`に次を設定してBotを再起動します。
+カレンダーの別名・ラベルID・通知先チャンネルIDは、許可済みの実際の値に置き換えます。
+
+```dotenv
+DAILY_SCHEDULE_REMINDER='{"calendar_alias":"personal","label_id":"ラベルID","channel_id":"C_REPLACE","hour":10,"minute":0}'
+```
+
+毎日10:00（日本時間）に、その日の対象ラベルの予定を時刻・タイトル・リンク付きで通知します。
+終日・複数日予定も含み、予定がない日は投稿しません。AIの呼び出しは使いません。
+Botは常時起動が必要で、10:00に停止していた場合は当日中の再起動時に通知します。
+送信状態をSQLiteに保存して重複投稿を防ぎます。送信結果が不明な場合は自動再送せず、
+`uncertain_write`をログに出します。その場合はSlackの投稿とDBの`schedule_reminders`を確認してください。
+無効にする場合は`DAILY_SCHEDULE_REMINDER='null'`にして再起動します。
+
 公開Web調査は`config/tools.toml`の`web_search`で切り替えます（`live` / `disabled`）。
 調査方針は`rules/research.md`で管理します。ログイン後のチーム固有情報は公開検索の対象外です。
 

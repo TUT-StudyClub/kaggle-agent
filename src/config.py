@@ -3,9 +3,9 @@ import os
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 
-from modules.interaction.public import AgentPolicy
+from modules.interaction.public import AgentPolicy, DailyScheduleReminder
 
 
 class Settings(AgentPolicy):
@@ -16,6 +16,17 @@ class Settings(AgentPolicy):
     slack_bot_token: SecretStr = SecretStr("")
     slack_app_token: SecretStr = SecretStr("")
     notion_token: SecretStr = SecretStr("")
+    daily_schedule_reminder: DailyScheduleReminder | None = None
+
+    @model_validator(mode="after")
+    def valid_reminder(self) -> Settings:
+        reminder = self.daily_schedule_reminder
+        if reminder is not None:
+            if reminder.calendar_alias not in self.calendars:
+                raise ValueError("定期通知には許可したカレンダーの別名を指定してください")
+            if reminder.channel_id not in self.channel_ids:
+                raise ValueError("定期通知には許可したSlackチャンネルIDを指定してください")
+        return self
 
     def agent_policy(self) -> AgentPolicy:
         return AgentPolicy.model_validate(
@@ -33,6 +44,7 @@ class Settings(AgentPolicy):
             "notion_data_sources",
             "notion_parents",
             "calendars",
+            "daily_schedule_reminder",
         }
         data = {}
         for field in cls.model_fields:

@@ -8,6 +8,7 @@ from modules.scheduling.public import SchedulingService
 from shared.application.ports.clock import Clock
 from shared.infrastructure.clock import SystemClock
 
+from .application.dto.reminders import DailyScheduleReminder
 from .application.facade import InteractionFacade
 from .application.policies.access import AgentPolicy
 from .application.ports.messenger import Messenger
@@ -20,8 +21,10 @@ from .application.use_cases.deliver_notifications import DeliverNotificationsUse
 from .application.use_cases.process_job import ProcessJobUseCase
 from .application.use_cases.receive_message import ReceiveMessageUseCase
 from .application.use_cases.reconcile_job import ReconcileJobUseCase
+from .application.use_cases.remind_schedule import RemindScheduleUseCase
 from .domain.repositories import JobRepository
 from .infrastructure.messaging.slack import SlackMessenger
+from .infrastructure.messaging.slack_reminders import SlackReminderSender
 from .infrastructure.persistence.sqlite import SQLiteJobRepository
 
 
@@ -36,6 +39,7 @@ def build_agent(
     *,
     clock: Clock | None = None,
     tools: ToolRegistry | None = None,
+    reminders: RemindScheduleUseCase | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
     tools = tools or ToolRegistry((KnowledgeTool(knowledge), SchedulingTool(scheduling)), skillbook)
@@ -59,6 +63,7 @@ def build_agent(
         ReconcileJobUseCase(jobs, tools),
         DeliverNotificationsUseCase(jobs, messenger, activity, clock),
         JobManagement(jobs),
+        reminders,
     )
 
 
@@ -72,11 +77,31 @@ def build_interaction(
     skillbook: SkillBook,
     *,
     clock: Clock | None = None,
+    daily_schedule_reminder: DailyScheduleReminder | None = None,
 ) -> InteractionFacade:
+    clock = clock or SystemClock()
     jobs = SQLiteJobRepository(database)
     messenger = SlackMessenger(client, policy, jobs)
+    reminders = None
+    if daily_schedule_reminder is not None:
+        reminders = RemindScheduleUseCase(
+            daily_schedule_reminder,
+            policy.team_id,
+            scheduling,
+            jobs,
+            SlackReminderSender(client, policy.channel_ids),
+            clock,
+        )
     return build_agent(
-        policy, jobs, planner, messenger, knowledge, scheduling, skillbook, clock=clock
+        policy,
+        jobs,
+        planner,
+        messenger,
+        knowledge,
+        scheduling,
+        skillbook,
+        clock=clock,
+        reminders=reminders,
     )
 
 

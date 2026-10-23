@@ -299,3 +299,85 @@ def test_application_policy_excludes_runtime_secrets(tmp_path):
         not {"slack_bot_token", "slack_app_token", "notion_token", "database", "google_token_file"}
         & policy.model_dump().keys()
     )
+
+
+def test_daily_reminder_json_loads_and_stays_outside_ai_policy(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(
+        "TEAM_ID=T1\nUSER_IDS='[\"U1\"]'\nCHANNEL_IDS='[\"C1\"]'\n"
+        'CALENDARS=\'{"club":{"id":"calendar"}}\'\n'
+        'DAILY_SCHEDULE_REMINDER=\'{"calendar_alias":"club","label_id":"team",'
+        '"channel_id":"C1"}\'\n'
+    )
+    config = Settings.load(path)
+    assert config.daily_schedule_reminder is not None
+    assert config.daily_schedule_reminder.hour == 10
+    assert config.daily_schedule_reminder.minute == 0
+    assert "daily_schedule_reminder" not in config.agent_policy().model_dump()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"calendar_alias": "unknown"},
+        {"channel_id": "COTHER"},
+        {"channel_id": "D1"},
+        {"hour": 24},
+        {"minute": 60},
+        {"label_id": ""},
+    ],
+)
+def test_daily_reminder_rejects_unallowed_targets_and_invalid_schedule(tmp_path, override):
+    with pytest.raises(ValueError):
+        Settings.model_validate(
+            {
+                "team_id": "T1",
+                "user_ids": ["U1"],
+                "channel_ids": ["C1"],
+                "calendars": {"club": {"id": "calendar"}},
+                "daily_schedule_reminder": {
+                    "calendar_alias": "club",
+                    "label_id": "team",
+                    "channel_id": "C1",
+                    **override,
+                },
+            }
+        )
+
+
+def test_runtime_starts_reminders_in_a_separate_thread(tmp_path, monkeypatch):
+    from apps.slack.main import run
+    from apps.worker.reminders import run_reminders
+    from modules.interaction.public import DailyScheduleReminder
+
+    config = settings(tmp_path).model_copy(
+        update={
+            "database": tmp_path / "agent.sqlite3",
+            "daily_schedule_reminder": DailyScheduleReminder(
+                calendar_alias="club", label_id="team", channel_id="C1"
+            ),
+        }
+    )
+    monkeypatch.setattr("apps.slack.main.build", lambda *_: (Mock(), Mock()))
+    workers = []
+
+    def create_thread(**kwargs):
+        thread = Mock(ident=1)
+        workers.append((kwargs, thread))
+        return thread
+
+    monkeypatch.setattr("apps.slack.main.threading.Thread", create_thread)
+    handlers = {}
+    monkeypatch.setattr(
+        "apps.slack.main.signal.signal", lambda sig, handler: handlers.setdefault(sig, handler)
+    )
+    handler = Mock()
+    # 停止を要求してmainの待機を解除する。実際のスレッドや接続は作らない。
+    handler.connect.side_effect = lambda: next(iter(handlers.values()))(None, None)
+    monkeypatch.setattr("apps.slack.main.SocketModeHandler", lambda *_: handler)
+    run(config)
+    assert len(workers) == 2
+    assert workers[1][0]["target"] is run_reminders
+    for _, thread in workers:
+        thread.start.assert_called_once()
+        thread.join.assert_called_once()

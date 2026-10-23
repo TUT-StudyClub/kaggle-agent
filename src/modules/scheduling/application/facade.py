@@ -1,3 +1,4 @@
+from ..domain.models import Event, TimeRange
 from .dto.commands import CreateEvent, FindFree, ListCalendars, ListEvents, UpdateEvent
 from .policies.calendar_authorization import CalendarAuthorization
 from .services.member_mapping import MemberMappingService
@@ -24,6 +25,9 @@ class SchedulingService:
     @property
     def uses_member_directory(self) -> bool:
         return self._members.uses_member_directory
+
+    def events_for_label(self, alias: str, label_id: str, period: TimeRange) -> list[Event]:
+        return self._read.events_for_label(alias, label_id, period)
 
     def execute(self, action: object, key: str) -> dict[str, object]:
         if isinstance(action, (ListCalendars, ListEvents, FindFree)):

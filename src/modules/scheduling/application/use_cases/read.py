@@ -4,7 +4,7 @@ from modules.scheduling.application.dto.commands import (
     ListEvents,
 )
 from modules.scheduling.application.services.member_mapping import MemberMappingService
-from modules.scheduling.domain.models import free_slots
+from modules.scheduling.domain.models import Event, TimeRange, free_slots
 from modules.scheduling.domain.repositories import CalendarRepository
 from modules.scheduling.domain.services.member_mapping import resolve_label
 from shared.errors import AgentError
@@ -14,6 +14,12 @@ class ReadScheduleUseCase:
     def __init__(self, repository: CalendarRepository, members: MemberMappingService):
         self.repository = repository
         self.members = members
+
+    def events_for_label(self, alias: str, label_id: str, period: TimeRange) -> list[Event]:
+        # チームラベルは個人のMember DBマッピングに依存しない。
+        return [
+            event for event in self.repository.events(alias, period) if event.label_id == label_id
+        ]
 
     def execute(self, action: object, key: str) -> dict[str, object]:
         match action:

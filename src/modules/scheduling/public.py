@@ -15,4 +15,6 @@ from .application.dto.commands import (
 )
 from .application.dto.configuration import CalendarConfig as CalendarConfig
 from .application.facade import SchedulingService as SchedulingService
+from .domain.models import Event as Event
+from .domain.models import TimeRange as TimeRange
 from .domain.repositories import CalendarRepository as CalendarRepository

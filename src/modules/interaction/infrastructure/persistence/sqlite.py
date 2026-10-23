@@ -15,19 +15,20 @@ from modules.interaction.domain.models import (
     ReplyDelivery,
     Source,
 )
+from modules.interaction.domain.reminders import ReminderRepository, ReminderState
 from modules.interaction.domain.repositories import DeliveryRepository, JobRepository
 from shared.errors import AgentError
 
 
-class SQLiteJobRepository(JobRepository, DeliveryRepository):
-    """各操作は短い独立トランザクション。ワーカーはプロセス内で1本に限定。"""
+class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository):
+    """短い独立トランザクション。ジョブはclaim、定期通知は日別の予約で排他する。"""
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = path
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise AgentError("database_version", "このバージョンではDBを開けません。")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -60,6 +61,14 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository):
                         id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
                     );
                     PRAGMA user_version=2;
+                """)
+            if version < 3:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS schedule_reminders (
+                        key TEXT PRIMARY KEY, state TEXT NOT NULL,
+                        message_ts TEXT, updated_at REAL NOT NULL
+                    );
+                    PRAGMA user_version=3;
                 """)
         self.path.chmod(0o600)
 
@@ -255,7 +264,34 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository):
             db.execute("DELETE FROM audit_logs WHERE created_at<?", (before,))
             db.execute("DELETE FROM notifications WHERE created_at<?", (before,))
             db.execute("DELETE FROM reply_deliveries WHERE updated_at<?", (before,))
+            db.execute("DELETE FROM schedule_reminders WHERE updated_at<?", (before,))
         return count
+
+    def reminder_state(self, key: str) -> ReminderState | None:
+        with self.connection() as db:
+            row = db.execute("SELECT state FROM schedule_reminders WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def reserve_reminder(self, key: str, now: float, *, empty: bool = False) -> bool:
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "INSERT OR IGNORE INTO schedule_reminders VALUES (?,?,NULL,?)",
+                    (key, "empty" if empty else "sending", now),
+                ).rowcount
+                == 1
+            )
+
+    def finish_reminder(self, key: str, message_ts: str, now: float) -> None:
+        with self.connection() as db:
+            db.execute(
+                "UPDATE schedule_reminders SET state='sent',message_ts=?,updated_at=? WHERE key=?",
+                (message_ts, now, key),
+            )
+
+    def release_reminder(self, key: str) -> None:
+        with self.connection() as db:
+            db.execute("DELETE FROM schedule_reminders WHERE key=? AND state='sending'", (key,))
 
     def consume_ai_budget(self, limit: int) -> bool:
         day = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
