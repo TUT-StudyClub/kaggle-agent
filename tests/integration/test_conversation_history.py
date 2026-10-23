@@ -65,8 +65,14 @@ def test_only_authenticated_bot_and_permitted_users_are_in_thread_history(harnes
     }
     messenger = SlackMessenger(client, harness.policy, bot_user_id="BOT1")
     thread = json.loads(messenger.thread(harness.source))
-    assert [message["text"] for message in thread] == ["質問", "以前の回答", "訂正", "再回答"]
-    assert [message["role"] for message in thread] == ["user", "assistant", "user", "assistant"]
+    assert [message["text"] for message in thread if "text" in message] == [
+        "質問",
+        "以前の回答",
+        "訂正",
+        "再回答",
+    ]
+    assert thread[-1] == {"role": "bystander", "user": "U2", "ts": "6"}
+    assert "非許可ユーザー" not in messenger.thread(harness.source)
 
 
 def test_unknown_bot_identity_does_not_trust_arbitrary_bots(harness):

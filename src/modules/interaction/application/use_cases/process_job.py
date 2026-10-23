@@ -1,4 +1,6 @@
 import json
+import re
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from modules.interaction.application.policies.access import AgentPolicy
@@ -9,7 +11,9 @@ from modules.interaction.application.services.availability_reply import availabi
 from modules.interaction.application.services.completion import JobCompletion
 from modules.interaction.application.services.meetings import meeting_preview
 from modules.interaction.application.services.tools import ToolRegistry
+from modules.interaction.domain.approval import is_approval_reply
 from modules.interaction.domain.models import (
+    Job,
     JobStatus,
 )
 from modules.interaction.domain.repositories import JobRepository
@@ -21,6 +25,7 @@ from modules.planning.public import (
     Planner,
     PlanningRequest,
     Reply,
+    ResponseRequest,
 )
 from modules.scheduling.public import (
     FindFree,
@@ -60,9 +65,66 @@ class ProcessJobUseCase:
         job = self.jobs.claim()
         if not job:
             return False
+        followup = job.message.addressing == "followup" and not job.plan_json
+        activity_started = False
         try:
             if not self.settings.allows(job.message.source):
                 raise AgentError("forbidden_source", "Slackの許可範囲外です。")
+            if followup:
+                if not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
+                thread = self._thread_at_message(job)
+                context = self.jobs.context(job.message.source)
+                stored = json.loads(context)
+                decision = self.planner.check_response(
+                    ResponseRequest(
+                        instruction=job.message.text,
+                        requester_user_id=job.message.source.user_id,
+                        thread=thread,
+                        context=json.dumps(
+                            {
+                                key: stored[key]
+                                for key in ("dialogue", "pending_clarification")
+                                if key in stored
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                if not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
+                if not decision.should_respond:
+                    self._ignore(job, "not_addressed")
+                    return True
+                approval = re.fullmatch(r"承認\s+([a-f0-9]{32})", job.message.text.strip())
+                if approval:
+                    approved = self.jobs.approve(
+                        approval[1], job.message.source, self.clock.timestamp()
+                    )
+                    if not approved:
+                        self.completion.finish(
+                            job,
+                            {},
+                            "承認できません。対象・利用者・スレッド・有効期限を確認してください。",
+                        )
+                    else:
+                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
+                    return True
+                if is_approval_reply(job.message.text):
+                    if self.jobs.approve_pending(job.message.source, self.clock.timestamp()):
+                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
+                        return True
+                    if not stored.get("pending_clarification"):
+                        self.completion.finish(
+                            job,
+                            {},
+                            "承認・返答できる確認がないか、期限が切れているよ。"
+                            "Botの確認メッセージと同じスレッドで返信してね。",
+                        )
+                        return True
+            activity_started = True
             self.activity.update(job.message.source, Activity.READING)
             if job.plan_json:
                 if (job.approval_expires_at or 0) < self.clock.timestamp():
@@ -88,9 +150,13 @@ class ProcessJobUseCase:
                 )
                 return True
             observations = []
-            thread = self.messenger.thread(job.message.source)
-            context = self.jobs.context(job.message.source)
+            if not followup:
+                thread = self._thread_at_message(job)
+                context = self.jobs.context(job.message.source)
             for _ in range(self.settings.max_read_steps + 1):
+                if followup and not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
                 self.activity.update(job.message.source, Activity.THINKING)
                 plan = self.planner.plan(
                     PlanningRequest(
@@ -123,6 +189,9 @@ class ProcessJobUseCase:
                         },
                     )
                 )
+                if followup and not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
                 if not self.tools.skillbook.permits(plan.action.kind):
                     raise AgentError("forbidden_tool", "この操作はツール設定で許可されていません。")
                 match plan.action:
@@ -191,16 +260,37 @@ class ProcessJobUseCase:
                 observations.append(result)
             raise AgentError("step_limit", "参照回数の上限に達しました。依頼を絞ってください。")
         except AgentError as error:
+            if followup and not activity_started:
+                self._ignore(job, "response_check_failed", error.code)
+                return True
             failed = job.transition(JobStatus.FAILED, error_code=error.code)
             self.jobs.notify(
                 failed, f"ジョブ {job.id}: {error.message} [{error.code}]", outcome=error.code
             )
         except Exception:
+            if followup and not activity_started:
+                self._ignore(job, "response_check_failed", "internal_error")
+                return True
             # SDK例外・ValidationError等をそのままSlackやログへ流さない。
             failed = job.transition(JobStatus.FAILED, error_code="internal_error")
             self.jobs.notify(
                 failed, f"ジョブ {job.id}: 内部エラーで停止しました。", outcome="internal_error"
             )
         finally:
-            self.activity.update(job.message.source, Activity.IDLE)
+            if activity_started:
+                self.activity.update(job.message.source, Activity.IDLE)
         return True
+
+    def _ignore(self, job: Job, outcome: str, error_code: str | None = None) -> None:
+        self.jobs.finish_silently(job.transition(JobStatus.IGNORED, error_code=error_code), outcome)
+
+    def _thread_at_message(self, job: Job) -> str:
+        thread = self.messenger.thread(job.message.source)
+        if job.message.message_ts is None:
+            return thread
+        messages = json.loads(thread)
+        # ワーカーの待機中に投稿された未来の発言を、今回の宛先判定に使わない。
+        return json.dumps(
+            [item for item in messages if Decimal(item["ts"]) <= Decimal(job.message.message_ts)],
+            ensure_ascii=False,
+        )

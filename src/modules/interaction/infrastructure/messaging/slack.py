@@ -265,6 +265,9 @@ class SlackMessenger(Messenger):
                             "text": item.get("text", ""),
                         }
                     )
+                elif item.get("user") and not item.get("bot_id") and not item.get("subtype"):
+                    # 本文は許可ユーザーだけ。他の人の発言は宛先の切替を示す印だけ残す。
+                    messages.append({"role": "bystander", "user": item["user"], "ts": item["ts"]})
             cursor = raw.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 text = json.dumps(messages, ensure_ascii=False)
