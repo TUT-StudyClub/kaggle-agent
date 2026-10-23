@@ -39,6 +39,7 @@ class Settings(AgentPolicy):
         values = dotenv_values(path, interpolate=False)
         json_fields = {
             "user_ids",
+            "dm_user_ids",
             "channel_ids",
             "notion_pages",
             "notion_data_sources",

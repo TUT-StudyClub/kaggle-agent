@@ -10,6 +10,7 @@ from shared.domain.value_object import ValueObject
 class AgentPolicy(ValueObject):
     team_id: str = Field(min_length=1)
     user_ids: frozenset[str] = Field(min_length=1)
+    dm_user_ids: frozenset[str] | None = None
     channel_ids: frozenset[str] = Field(min_length=1)
     notion_pages: frozenset[str] = frozenset()
     notion_data_sources: frozenset[str] = frozenset()
@@ -34,6 +35,8 @@ class AgentPolicy(ValueObject):
     def no_empty_ids(self) -> AgentPolicy:
         if any(not v for v in (*self.user_ids, *self.channel_ids)):
             raise ValueError("許可IDに空文字は使えません")
+        if self.dm_user_ids is not None and not self.dm_user_ids <= self.user_ids:
+            raise ValueError("DMの許可ユーザーはUSER_IDSに含めてください")
         return self
 
     def allows(self, source: Source) -> bool:
@@ -41,4 +44,9 @@ class AgentPolicy(ValueObject):
             source.team_id == self.team_id
             and source.user_id in self.user_ids
             and source.channel_id in self.channel_ids
+            and (
+                not source.channel_id.startswith("D")
+                or self.dm_user_ids is None
+                or source.user_id in self.dm_user_ids
+            )
         )
