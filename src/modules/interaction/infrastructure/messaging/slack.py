@@ -37,11 +37,7 @@ class SlackMessenger(Messenger):
             raise AgentError("slack_status", "Slackの処理状況を更新できません。") from None
 
     def _authorize(self, source: Source) -> None:
-        if (
-            source.team_id != self.policy.team_id
-            or source.user_id not in self.policy.user_ids
-            or source.channel_id not in self.policy.channel_ids
-        ):
+        if not self.policy.allows(source):
             raise AgentError("forbidden_source", "Slackの許可範囲外です。")
 
     def _read(self, method: str, **kwargs):
