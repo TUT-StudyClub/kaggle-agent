@@ -57,6 +57,7 @@ class ScriptedPlanner(Planner):
 class FakeMessenger(Messenger):
     def __init__(self):
         self.sent: list[str] = []
+        self.reactions: list[tuple[Source, str, str]] = []
         self.thread_reads = 0
         self.unavailable = False
         self.activities: list[Activity] = []
@@ -69,6 +70,11 @@ class FakeMessenger(Messenger):
         if self.unavailable:
             raise AgentError("slack_send", "offline")
         self.sent.append(text)
+
+    def react(self, source: Source, message_ts: str, name: str) -> None:
+        if self.unavailable:
+            raise AgentError("slack_reaction", "offline")
+        self.reactions.append((source, message_ts, name))
 
     def thread(self, source: Source) -> str:
         self.thread_reads += 1

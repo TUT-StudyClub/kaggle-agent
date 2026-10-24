@@ -102,7 +102,8 @@ def test_stop_applies_to_every_user_survives_restart_and_only_mention_resumes(ha
     post("!stop", "1001.000001", user="U2")
     assert not harness.jobs.tracks(harness.source) and not harness.jobs.tracks(other)
     post("!stop", "1001.000001", user="U2")
-    assert len(harness.messenger.sent) == 1
+    assert not harness.messenger.sent
+    assert harness.messenger.reactions == [(other, "1001.000001", "thumbsup")]
     harness.jobs = SQLiteJobRepository(harness.jobs.path)
     harness.configure()
     post = listener(harness)
@@ -115,6 +116,7 @@ def test_stop_applies_to_every_user_survives_restart_and_only_mention_resumes(ha
     # 再開前の古い停止イベント・メンションを再配信しても状態は戻らない。
     post("!stop", "1001.000001", user="U2")
     assert not harness.jobs.tracking_stopped(other)
+    assert harness.messenger.reactions == [(other, "1001.000001", "thumbsup")]
 
 
 def test_old_mention_does_not_resume_and_newer_stop_is_not_undone_by_duplicate(harness):
@@ -129,11 +131,29 @@ def test_old_mention_does_not_resume_and_newer_stop_is_not_undone_by_duplicate(h
     assert harness.jobs.tracking_stopped(harness.source)
 
 
+def test_stop_without_message_timestamp_does_not_react_to_thread_parent(harness):
+    result = harness.agent.receive(
+        IncomingMessage(event_id="stop", source=harness.source, text="!stop")
+    )
+    assert result is None
+    assert harness.jobs.tracking_stopped(harness.source)
+    assert not harness.messenger.sent and not harness.messenger.reactions
+
+
+def test_reaction_failure_keeps_thread_stopped_without_reply(harness):
+    harness.messenger.unavailable = True
+    with pytest.raises(AgentError):
+        listener(harness)("!stop", "1001.000001")
+    assert harness.jobs.tracking_stopped(harness.source)
+    assert not harness.messenger.sent
+
+
 def test_stop_is_scoped_to_thread_and_forbidden_user_cannot_control_it(harness):
     start(harness)
     post = listener(harness)
     post("!stop", "1001.000001", user="FORBIDDEN")
     assert not harness.jobs.tracking_stopped(harness.source)
+    assert not harness.messenger.reactions
     post("!stop", "1002.000001")
     post("<@BOT> 再開", "1003.000001", user="FORBIDDEN")
     assert harness.jobs.tracking_stopped(harness.source)
@@ -174,7 +194,8 @@ def test_stop_during_ai_call_suppresses_followup_result(harness, monkeypatch, st
     post("続きの質問", "1001.000001")
     assert harness.agent.run_once()
     assert harness.jobs.pending_notifications() == []
-    assert len(harness.messenger.sent) == 1  # !stop の受付だけ
+    assert not harness.messenger.sent
+    assert harness.messenger.reactions == [(harness.source, "1002.000001", "thumbsup")]
 
 
 @pytest.mark.parametrize("respond", [True, False])

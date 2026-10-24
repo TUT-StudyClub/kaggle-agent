@@ -24,10 +24,8 @@ class ReceiveMessageUseCase:
         if not self.settings.allows(source):
             return None
         if message.text.strip() == "!stop":
-            if self.jobs.set_tracking(message, stopped=True):
-                self.messenger.send(
-                    source, "このスレッドの追跡を止めたよ。再メンションで再開できるよ。"
-                )
+            if self.jobs.set_tracking(message, stopped=True) and message.message_ts is not None:
+                self.messenger.react(source, message.message_ts, "thumbsup")
             return None
         if message.addressing == "mention":
             was_stopped = self.jobs.tracking_stopped(source)

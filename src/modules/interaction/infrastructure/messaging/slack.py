@@ -84,6 +84,16 @@ class SlackMessenger(Messenger):
         except SlackClientError, OSError:
             raise AgentError("slack_send", "Slackへの送信に失敗しました。") from None
 
+    def react(self, source: Source, message_ts: str, name: str) -> None:
+        self._authorize(source)
+        try:
+            self.client.reactions_add(channel=source.channel_id, timestamp=message_ts, name=name)
+        except SlackApiError as error:
+            if error.response.get("error") != "already_reacted":
+                raise AgentError("slack_reaction", "Slackのリアクションに失敗しました。") from None
+        except SlackClientError, OSError:
+            raise AgentError("slack_reaction", "Slackのリアクションに失敗しました。") from None
+
     def _stop(self, source: Source, message_ts: str) -> None:
         try:
             self.client.chat_stopStream(channel=source.channel_id, ts=message_ts)

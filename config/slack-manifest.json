@@ -20,6 +20,7 @@
         "app_mentions:read",
         "chat:write",
         "reactions:read",
+        "reactions:write",
         "users:read",
         "channels:history",
         "channels:read",

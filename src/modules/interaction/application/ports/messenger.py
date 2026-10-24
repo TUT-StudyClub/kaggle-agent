@@ -26,6 +26,9 @@ class Messenger(ABC):
     def send(self, source: Source, text: str) -> None: ...
 
     @abstractmethod
+    def react(self, source: Source, message_ts: str, name: str) -> None: ...
+
+    @abstractmethod
     def thread(self, source: Source) -> str: ...
 
     @abstractmethod

@@ -71,6 +71,40 @@ def test_status_uses_native_indicator_without_posting(harness: Harness):
     client.chat_postMessage.assert_not_called()
 
 
+def test_reaction_targets_original_message_without_posting(harness: Harness):
+    client = Mock()
+    SlackMessenger(client, harness.policy).react(harness.source, "2000.000001", "thumbsup")
+    client.reactions_add.assert_called_once_with(
+        channel=harness.source.channel_id, timestamp="2000.000001", name="thumbsup"
+    )
+    client.chat_postMessage.assert_not_called()
+
+
+def test_existing_reaction_is_success(harness: Harness):
+    client = Mock()
+    client.reactions_add.side_effect = rejection("already_reacted")
+    SlackMessenger(client, harness.policy).react(harness.source, "2000.000001", "thumbsup")
+    client.chat_postMessage.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [rejection("missing_scope"), SlackClientError("offline")])
+def test_reaction_failure_does_not_fall_back_to_message(harness: Harness, failure):
+    client = Mock()
+    client.reactions_add.side_effect = failure
+    with pytest.raises(AgentError) as error:
+        SlackMessenger(client, harness.policy).react(harness.source, "2000.000001", "thumbsup")
+    assert error.value.code == "slack_reaction"
+    client.chat_postMessage.assert_not_called()
+
+
+def test_reaction_rejects_forbidden_source(harness: Harness):
+    client = Mock()
+    source = harness.source.model_copy(update={"user_id": "FORBIDDEN"})
+    with pytest.raises(AgentError):
+        SlackMessenger(client, harness.policy).react(source, "2000.000001", "thumbsup")
+    client.reactions_add.assert_not_called()
+
+
 def test_stream_preserves_markdown_and_is_delivered_once(harness: Harness):
     client = Mock()
     client.chat_startStream.return_value = {"ok": True, "ts": "2000.000001"}
