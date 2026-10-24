@@ -6,7 +6,7 @@ from modules.interaction.domain.models import (
     Job,
 )
 from modules.interaction.domain.repositories import JobRepository
-from modules.kaggle.public import WriteKaggle
+from modules.kaggle.public import KaggleHelp, ReadKaggle, WriteKaggle
 from modules.knowledge.public import (
     AppendPage,
     CreatePage,
@@ -113,3 +113,30 @@ class ActionService:
                 "kaggle_owner_only",
                 "Kaggleの提出・公開・削除・作成・実行・更新は、管理者本人だけが実行できるよ。",
             )
+
+    def input_feedback(self, job: Job, plan: Plan, error: AgentError) -> dict[str, object] | None:
+        """実行前の入力不備だけを、再計画に使える許可済みツールのヘルプへ戻す。"""
+        action = plan.action
+        if not isinstance(action, (ReadKaggle, WriteKaggle)) or error.code not in {
+            "kaggle_arguments",
+            "kaggle_command",
+            "kaggle_path",
+        }:
+            return None
+        self._authorize(job, plan)
+        help_result = self.tools.execute(
+            KaggleHelp(command="" if error.code == "kaggle_command" else action.command),
+            "",
+            job.id,
+            source=job.message.source,
+        )
+        return {
+            "tool_error": {
+                "code": error.code,
+                "message": error.message,
+                "command": action.command,
+                "arguments": action.arguments,
+                "executed": False,
+            },
+            "kaggle_help": help_result,
+        }

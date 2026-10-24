@@ -150,6 +150,7 @@ class ProcessJobUseCase:
                 )
                 return True
             observations = []
+            rejected_plans: set[str] = set()
             if not followup:
                 thread = self._thread_at_message(job)
                 context = self.jobs.context(job.message.source)
@@ -225,6 +226,8 @@ class ProcessJobUseCase:
                     try:
                         plan = self.actions.prepare(job, plan)
                     except AgentError as error:
+                        if self._recover_input(job, plan, error, observations, rejected_plans):
+                            continue
                         if error.code not in {
                             "invitation_missing_email",
                             "invitation_ambiguous_email",
@@ -252,7 +255,12 @@ class ProcessJobUseCase:
                         outcome="awaiting_approval",
                     )
                     return True
-                result = self.actions.execute(job, plan)
+                try:
+                    result = self.actions.execute(job, plan)
+                except AgentError as error:
+                    if self._recover_input(job, plan, error, observations, rejected_plans):
+                        continue
+                    raise
                 if isinstance(plan.action, FindFree):
                     # 日付・時刻・判定はPythonの計算結果から直接返す。AIに再編集させない。
                     self.completion.finish(job, result, availability_reply(result))
@@ -264,7 +272,11 @@ class ProcessJobUseCase:
                 return True
             failed = job.transition(JobStatus.FAILED, error_code=error.code)
             self.jobs.notify(
-                failed, f"ジョブ {job.id}: {error.message} [{error.code}]", outcome=error.code
+                failed,
+                error.message
+                if error.code == "kaggle_input_stalled"
+                else f"ジョブ {job.id}: {error.message} [{error.code}]",
+                outcome=error.code,
             )
         except Exception:
             if followup and not activity_started:
@@ -278,6 +290,26 @@ class ProcessJobUseCase:
         finally:
             if activity_started:
                 self.activity.update(job.message.source, Activity.IDLE)
+        return True
+
+    def _recover_input(
+        self,
+        job: Job,
+        plan: Plan,
+        error: AgentError,
+        observations: list[dict],
+        rejected_plans: set[str],
+    ) -> bool:
+        feedback = self.actions.input_feedback(job, plan, error)
+        if feedback is None:
+            return False
+        signature = plan.model_dump_json()
+        if signature in rejected_plans:
+            raise AgentError(
+                "kaggle_input_stalled", "Kaggleの取得条件を修正できず、処理を止めたよ。"
+            )
+        rejected_plans.add(signature)
+        observations.append(feedback)
         return True
 
     def _ignore(self, job: Job, outcome: str, error_code: str | None = None) -> None:

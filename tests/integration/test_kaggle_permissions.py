@@ -212,3 +212,132 @@ def test_owner_setting_loads_without_exposing_credentials(tmp_path):
     assert "private-kaggle-token" not in repr(settings)
     with pytest.raises(ValidationError):
         Settings.model_validate({**settings.model_dump(), "kaggle_owner_user_id": "U3"})
+
+
+@pytest.mark.parametrize(
+    "bad_command,bad_arguments,help_key",
+    [
+        ("competitions files", ["example", "--limit", "5"], "options"),
+        ("competitions unknown", ["example"], "kaggle_commands"),
+        ("competitions download", ["example", "--path", "/outside"], "options"),
+    ],
+)
+def test_input_error_reads_help_replans_and_answers(kaggle, bad_command, bad_arguments, help_key):
+    h = kaggle.harness
+    kaggle.as_user("U2")
+    h.planner.steps = [
+        Plan(action=ReadKaggle(command=bad_command, arguments=bad_arguments)),
+        Plan(
+            action=ReadKaggle(
+                command="competitions files", arguments=["example", "--format", "json"]
+            )
+        ),
+        Plan(action=Reply(text="学習用データとテストデータがあるよ。")),
+    ]
+    job_id = h.submit("データってどんな感じなの？")
+    h.agent.run_once()
+    assert h.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    feedback = h.planner.requests[1].observations[0]
+    assert not feedback["tool_error"]["executed"]
+    assert feedback["tool_error"]["arguments"] == bad_arguments
+    assert help_key in feedback["kaggle_help"]
+    assert len(kaggle.runner.executed) == 1
+    assert kaggle.runner.executed[0].command == "competitions files"
+    assert h.planner.requests[2].observations[-1] == {"output": "Kaggle result", "files": []}
+    h.agent.deliver_notifications()
+    assert h.messenger.sent == ["学習用データとテストデータがあるよ。"]
+
+
+def test_owner_write_is_corrected_before_new_approval(kaggle):
+    h = kaggle.harness
+    h.planner.steps = [
+        Plan(action=WriteKaggle(command="datasets create", arguments=["--invalid"])),
+        Plan(action=WriteKaggle(command="datasets create", arguments=["--path", "owner/data"])),
+    ]
+    job_id = h.submit("このデータを作成して")
+    h.agent.run_once()
+    job = h.jobs.get(job_id)
+    assert job.status == JobStatus.AWAITING_APPROVAL
+    action = Plan.model_validate_json(job.plan_json).action
+    assert isinstance(action, WriteKaggle)
+    assert action.arguments == ["--path", "owner/data"]
+    assert not kaggle.runner.executed
+    assert h.planner.requests[1].observations[0]["tool_error"]["code"] == "kaggle_arguments"
+    h.approve(job_id)
+    h.agent.run_once()
+    assert h.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    assert len(kaggle.runner.executed) == 1
+
+
+def test_identical_invalid_plan_stops_without_repeating_forever(kaggle):
+    h = kaggle.harness
+    bad_plan = Plan(action=ReadKaggle(command="competitions files", arguments=["--invalid"]))
+    h.planner.steps = [bad_plan, bad_plan]
+    job_id = h.submit()
+    h.agent.run_once()
+    assert h.jobs.get(job_id).error_code == "kaggle_input_stalled"
+    assert len(h.planner.requests) == 2
+    assert not kaggle.runner.executed
+    h.agent.deliver_notifications()
+    assert len(h.messenger.sent) == 1
+    assert job_id not in h.messenger.sent[0]
+    assert "kaggle_arguments" not in h.messenger.sent[0]
+
+
+@pytest.mark.parametrize("code", ["kaggle_auth", "kaggle_failed", "uncertain_write"])
+def test_auth_and_execution_failures_are_not_replanned(kaggle, monkeypatch, code):
+    from shared.errors import AgentError
+
+    h = kaggle.harness
+
+    def fail(*args):
+        raise AgentError(code, "外部操作を確認できないよ。")
+
+    monkeypatch.setattr(kaggle.runner, "run", fail)
+    h.planner.steps = [Plan(action=ReadKaggle(command="competitions files", arguments=["example"]))]
+    job_id = h.submit()
+    h.agent.run_once()
+    assert h.jobs.get(job_id).error_code == code
+    assert len(h.planner.requests) == 1
+
+
+def test_argument_error_from_approved_write_does_not_replan_or_repeat(kaggle, monkeypatch):
+    from shared.errors import AgentError
+
+    h = kaggle.harness
+    calls = []
+
+    def fail(*args):
+        calls.append(args)
+        raise AgentError("kaggle_arguments", "CLIが引数を受け付けなかったよ。")
+
+    monkeypatch.setattr(kaggle.runner, "run", fail)
+    h.planner.steps = [Plan(action=WriteKaggle(command="kernels push"))]
+    job_id = h.submit()
+    h.agent.run_once()
+    h.approve(job_id)
+    h.agent.run_once()
+    assert h.jobs.get(job_id).error_code == "kaggle_arguments"
+    assert h.jobs.get(job_id).write_started
+    assert len(h.planner.requests) == 1 and len(calls) == 1
+
+
+def test_input_recovery_cannot_enable_a_disabled_help_tool(kaggle):
+    h = kaggle.harness
+    permission = h.skillbook.policy.tools["kaggle"]
+    tools = {
+        **h.skillbook.policy.tools,
+        "kaggle": permission.model_copy(update={"actions": permission.actions - {"kaggle.help"}}),
+    }
+    h.skillbook = h.skillbook.model_copy(
+        update={"policy": h.skillbook.policy.model_copy(update={"tools": tools})}
+    )
+    h.configure()
+    h.planner.steps = [
+        Plan(action=ReadKaggle(command="competitions files", arguments=["--invalid"]))
+    ]
+    job_id = h.submit()
+    h.agent.run_once()
+    assert h.jobs.get(job_id).error_code == "forbidden_tool"
+    assert len(h.planner.requests) == 1
+    assert not kaggle.runner.executed

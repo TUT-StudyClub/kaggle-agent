@@ -9,10 +9,18 @@ description: Kaggle CLIによるコンペ・Dataset・Notebook・Model・Discuss
 `command`は`datasets list`や`models instances versions download`のような、一覧にある完全なコマンド名。
 `arguments`はシェル文字列ではなく、`["-s", "titanic", "--format", "json"]`のような引数の配列。
 CLIのエイリアス・フラグの省略形を使わず、ヘルプで確認した完全なフラグだけを使う。
+入力エラー時はPythonが対応ヘルプを`observations.kaggle_help`へ返す。
+未対応のフラグを外す・必須の値を補うなどして、修正した操作案を返す。
+別コマンドの引数を流用せず、`--format`もそのコマンドのヘルプにある場合だけ指定する。
 
 ## 調査と取得
 
 - `kaggle.read`でコンペの一覧・ファイル・提出履歴・スコア・ページ・Discussionを調べる。
+- コンペのデータ概要は、対象コンペの`competitions files`を取得して説明する。
+  `competitions pages list`の`--content`で説明も取得し、何を入力・予測するデータか、
+  配布ファイルの役割・サイズなどを質問に合わせて短くまとめる。
+  `competitions pages list`のコンペ指定は`--competition`を使う。
+  取得したファイル一覧だけで行数・列名・サンプル内容を推測しない。
 - Dataset・Notebook・Model・Benchmarkの検索・状態確認・ダウンロードを扱う。
 - 残り提出回数は`competitions submission-limits`を`["コンペのslug", "--json"]`で取得し、
   `numAllowedNow`（SDK名`num_allowed_now`）をそのまま答える。
