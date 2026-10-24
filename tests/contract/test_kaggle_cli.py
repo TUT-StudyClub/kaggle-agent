@@ -199,3 +199,49 @@ def test_catalog_covers_every_supported_leaf_and_marks_side_effects(runner):
     assert not runner.catalog["datasets metadata"]["write"]
     assert runner.prepare("datasets metadata", ["owner/data", "--update"]).write
     assert not runner.prepare("datasets metadata", ["owner/data"]).write
+
+
+def test_cli_parser_error_is_distinct_from_auth_or_api_failure(runner, monkeypatch):
+    class ArgumentErrorProcess(Process):
+        def wait(self, **kwargs):
+            return 2
+
+    monkeypatch.setattr(subprocess, "Popen", ArgumentErrorProcess)
+    with pytest.raises(AgentError) as error:
+        runner.run(runner.prepare("competitions files", ["example", "--page-size", "wrong"]), "job")
+    assert error.value.code == "kaggle_arguments"
+    assert "shared-secret" not in error.value.message
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "competitions pages list",
+        "competitions pages create",
+        "competitions pages update",
+        "competitions pages delete",
+    ],
+)
+def test_page_competition_is_canonicalized_for_nested_cli_parser(runner, command):
+    invocation = runner.prepare(command, ["example", "--page-name", "description"])
+    assert invocation.arguments == ("--competition", "example", "--page-name", "description")
+    assert runner.prepare(command, list(invocation.arguments)) == invocation
+    assert "--competition" in runner.describe(command, False)["argument_notes"]
+
+
+def test_page_cli_uses_explicit_competition_option(runner, monkeypatch):
+    calls = []
+
+    def process(*args, **kwargs):
+        calls.append(args[0])
+        return Process(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", process)
+    runner.run(runner.prepare("competitions pages list", ["example", "--content"]), "job")
+    argv = calls[0]
+    assert argv[-3:] == ["--competition", "example", "--content"]
+
+
+def test_page_command_requires_competition_instead_of_using_subcommand_as_target(runner):
+    with pytest.raises(AgentError, match="--competition"):
+        runner.prepare("competitions pages list", ["--content"])

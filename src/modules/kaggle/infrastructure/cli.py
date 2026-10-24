@@ -49,7 +49,14 @@ class KaggleCLIRunner(KaggleRunner):
                 "downloads": "取得先はPythonが操作ごとに分離する。--pathは指定しない。",
             }
         spec = self._spec(command)
-        return {"kaggle_command": command, **spec, "kaggle_may_write": may_write}
+        result = {"kaggle_command": command, **spec, "kaggle_may_write": may_write}
+        if command.startswith("competitions pages "):
+            result["argument_notes"] = (
+                "コンペは--competitionで指定する。例: "
+                '["--competition", "competition-slug", "--content"]。'
+                "位置引数でも受け付けるが、CLIの親・子パーサーの曖昧さを避けるためPythonが正規化する。"
+            )
+        return result
 
     def prepare(self, command: str, arguments: list[str]) -> KaggleInvocation:
         spec = self._spec(command)
@@ -92,9 +99,17 @@ class KaggleCLIRunner(KaggleRunner):
         write = spec["write"] or (
             command == "datasets metadata" and any(opt["dest"] == "update" for opt, _ in pairs)
         )
+        if command.startswith("competitions pages ") and not any(
+            option["dest"] in {"competition", "competition_opt"} for option, _ in pairs
+        ):
+            raise AgentError("kaggle_arguments", "--competitionで対象コンペを指定してね。")
         normalized = []
         for option, value in pairs:
             dest = option["dest"]
+            if command.startswith("competitions pages ") and dest == "competition":
+                # CLIの親pagesと子list等が同じ位置引数を持つため、named optionへ揃える。
+                normalized.extend(["--competition", str(value)])
+                continue
             if dest in {"unzip", "untar", "follow", "wait"}:
                 raise AgentError(
                     "kaggle_arguments",
@@ -204,6 +219,8 @@ class KaggleCLIRunner(KaggleRunner):
             except OSError:
                 raise AgentError("kaggle_cli", "Kaggle CLIを起動できなかったよ。") from None
             if code != 0:
+                if code == 2:
+                    raise AgentError("kaggle_arguments", "Kaggle CLIが引数を受け付けなかったよ。")
                 # CLI例外にはトークンやファイル内容を含みうるためそのまま返さない。
                 raise AgentError(
                     "kaggle_failed", "Kaggle操作に失敗したよ。認証・権限・入力を確認してね。"
