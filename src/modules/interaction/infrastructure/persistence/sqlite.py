@@ -29,7 +29,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         self.path = path
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 5:
+            if version > 6:
                 raise AgentError("database_version", "このバージョンではDBを開けません。")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -84,6 +84,11 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                         event_ts TEXT NOT NULL, last_stop_ts TEXT
                     );
                     PRAGMA user_version=5;
+                """)
+            if version < 6:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS conversation_tracking (key TEXT PRIMARY KEY);
+                    PRAGMA user_version=6;
                 """)
         self.path.chmod(0o600)
 
@@ -336,8 +341,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         with self.connection() as db:
             return (
                 db.execute(
-                    "SELECT 1 FROM jobs WHERE conversation_key=? LIMIT 1",
-                    (source.conversation_key,),
+                    "SELECT 1 FROM conversation_tracking WHERE key=? "
+                    "UNION ALL SELECT 1 FROM jobs WHERE conversation_key=? LIMIT 1",
+                    (source.conversation_key, source.conversation_key),
                 ).fetchone()
                 is not None
             )
@@ -375,6 +381,12 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                     event_ts if stopped else row[1] if row else None,
                 ),
             )
+            if not stopped:
+                # 本文なしのメンションも、AIジョブを作らず本人の会話開始として保持する。
+                db.execute(
+                    "INSERT OR IGNORE INTO conversation_tracking VALUES (?)",
+                    (message.source.conversation_key,),
+                )
         return True
 
     def accepts_followup(self, message: IncomingMessage) -> bool:

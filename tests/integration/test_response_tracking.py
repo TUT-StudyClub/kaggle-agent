@@ -257,6 +257,51 @@ def test_bare_mention_resumes_without_an_ai_request(harness):
     assert not harness.planner.response_requests and not harness.planner.requests
 
 
+def test_bare_mention_starts_tracking_before_first_job_and_survives_restart(harness):
+    listener(harness)("<@BOT>", "1001.000001")
+    assert harness.agent.tracks(harness.source)
+    assert not harness.agent.run_once()
+    assert not harness.messenger.sent
+    harness.jobs = SQLiteJobRepository(harness.jobs.path)
+    harness.configure()
+    harness.planner.response_steps = [True]
+    harness.planner.steps = [Plan(action=Reply(text="おはよう！"))]
+    listener(harness)("おはよう", "1002.000001")
+    assert harness.agent.run_once()
+    harness.agent.deliver_notifications()
+    assert harness.messenger.sent == ["おはよう！"]
+    assert harness.planner.response_requests[0].instruction == "おはよう"
+
+
+def test_bare_mention_tracking_is_scoped_to_user_and_thread(harness):
+    post = listener(harness)
+    post("<@BOT>", "1001.000001")
+    assert harness.agent.tracks(harness.source)
+    assert not harness.agent.tracks(harness.source.model_copy(update={"user_id": "U2"}))
+    assert not harness.agent.tracks(harness.source.model_copy(update={"thread_ts": "9000.000001"}))
+    post("!stop", "1002.000001")
+    post("<@BOT>", "1001.000001")
+    assert not harness.agent.tracks(harness.source)
+
+
+def test_v5_migration_preserves_stop_and_existing_conversation(harness):
+    start(harness)
+    listener(harness)("!stop", "1001.000001")
+    with harness.jobs.connection() as db:
+        count = db.execute("SELECT count(*) FROM jobs").fetchone()[0]
+        db.execute("DROP TABLE conversation_tracking")
+        db.execute("PRAGMA user_version=5")
+    harness.jobs = SQLiteJobRepository(harness.jobs.path)
+    harness.configure()
+    assert harness.jobs.tracking_stopped(harness.source)
+    assert not harness.agent.tracks(harness.source)
+    listener(harness)("<@BOT>", "1002.000001")
+    assert harness.agent.tracks(harness.source)
+    with harness.jobs.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs").fetchone()[0] == count
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+
+
 def test_bot_clarification_keeps_original_request_after_classified_short_answer(harness):
     harness.planner.steps = [Plan(action=Clarify(question="明日の19時でいい？"))]
     harness.submit("ミーティングの時間を相談したい")
