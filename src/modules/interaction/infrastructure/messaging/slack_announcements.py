@@ -6,6 +6,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError, SlackClientError
 
 from modules.interaction.application.ports.announcements import AnnouncementSender
+from modules.interaction.infrastructure.messaging.formatting import message_payload
 from shared.errors import AgentError, UncertainWrite
 
 
@@ -51,8 +52,7 @@ class SlackAnnouncementSender(AnnouncementSender):
         try:
             response = self.client.chat_postMessage(
                 channel=channel_id,
-                text=text,
-                mrkdwn=True,
+                **message_payload(text, slack_markup=True),
                 parse="none",
                 link_names=False,
                 unfurl_links=False,

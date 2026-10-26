@@ -10,6 +10,7 @@ from modules.interaction.application.policies.access import AgentPolicy
 from modules.interaction.application.ports.messenger import Activity, Messenger
 from modules.interaction.domain.models import ReplyDelivery, Source
 from modules.interaction.domain.repositories import DeliveryRepository
+from modules.interaction.infrastructure.messaging.formatting import message_payload
 from shared.errors import AgentError
 
 
@@ -58,21 +59,10 @@ class SlackMessenger(Messenger):
         raise AssertionError("unreachable")
 
     def _post(self, source: Source, text: str):
-        # 通常の回答は標準MarkdownをSlack側で変換する。12,000文字を超える
-        # 操作内容などは従来のmrkdwnで送り、本文や承認コマンドを切り捨てない。
-        if len(text) <= 12000:
-            return self.client.chat_postMessage(
-                channel=source.channel_id,
-                thread_ts=source.thread_ts,
-                markdown_text=text,
-                unfurl_links=False,
-                unfurl_media=False,
-            )
         return self.client.chat_postMessage(
             channel=source.channel_id,
             thread_ts=source.thread_ts,
-            text=text,
-            mrkdwn=True,
+            **message_payload(text),
             unfurl_links=False,
             unfurl_media=False,
         )
@@ -129,7 +119,7 @@ class SlackMessenger(Messenger):
                 self._stop(source, delivery.message_ts)
                 # 追記が届いたか不明な場合も、同じ返信を検証済みの全文で置き換える。
                 self.client.chat_update(
-                    channel=source.channel_id, ts=delivery.message_ts, markdown_text=text
+                    channel=source.channel_id, ts=delivery.message_ts, **message_payload(text)
                 )
             except SlackClientError, OSError:
                 raise AgentError("slack_stream_repair", "Slackの返信を復旧できません。") from None
@@ -189,6 +179,11 @@ class SlackMessenger(Messenger):
                     markdown_text=text[offset : offset + 512],
                 )
             self._stop(source, message_ts)
+            payload = message_payload(text)
+            if "blocks" in payload:
+                # ストリーム確定時も通常投稿と同じネイティブリストにする。
+                # 更新失敗時はopenのまま残し、次回同じTSを修復する。
+                self.client.chat_update(channel=source.channel_id, ts=message_ts, **payload)
             store.save_delivery(delivery.model_copy(update={"state": "done"}))
         except SlackClientError, OSError:
             # TSが得られたストリームは次回に同じ返信を修復する。別投稿にフォールバックしない。

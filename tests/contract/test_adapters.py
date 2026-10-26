@@ -408,13 +408,12 @@ def test_slack_reply_uses_standard_markdown(harness: Harness):
         "```python\nprint('hello')\n```"
     )
     SlackMessenger(client, harness.policy).send(harness.source, text)
-    client.chat_postMessage.assert_called_once_with(
-        channel=harness.source.channel_id,
-        thread_ts=harness.source.thread_ts,
-        markdown_text=text,
-        unfurl_links=False,
-        unfurl_media=False,
-    )
+    sent = client.chat_postMessage.call_args.kwargs
+    assert sent["channel"] == harness.source.channel_id
+    assert sent["thread_ts"] == harness.source.thread_ts
+    assert sent["text"] == text
+    assert sent["unfurl_links"] is False and sent["unfurl_media"] is False
+    assert any(part["type"] == "rich_text_list" for part in sent["blocks"][0]["elements"])
 
 
 def test_slack_long_preview_keeps_full_body_and_approval_command(harness: Harness):
