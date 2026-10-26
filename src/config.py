@@ -1,11 +1,12 @@
 import json
 import os
 from pathlib import Path
+from uuid import UUID
 
 from dotenv import dotenv_values
 from pydantic import Field, SecretStr, model_validator
 
-from modules.interaction.public import AgentPolicy, DailyScheduleReminder
+from modules.interaction.public import AgentPolicy, DailyScheduleReminder, DailyTaskReminder
 
 
 class Settings(AgentPolicy):
@@ -20,6 +21,7 @@ class Settings(AgentPolicy):
     kaggle_config_dir: Path = Path.home() / ".kaggle"
     kaggle_workspace: Path = Path("var/kaggle")
     daily_schedule_reminder: DailyScheduleReminder | None = None
+    daily_task_reminder: DailyTaskReminder | None = None
 
     @model_validator(mode="after")
     def valid_reminder(self) -> Settings:
@@ -29,6 +31,13 @@ class Settings(AgentPolicy):
                 raise ValueError("定期通知には許可したカレンダーの別名を指定してください")
             if reminder.channel_id not in self.channel_ids:
                 raise ValueError("定期通知には許可したSlackチャンネルIDを指定してください")
+        task_reminder = self.daily_task_reminder
+        if task_reminder is not None:
+            if task_reminder.channel_id not in self.channel_ids:
+                raise ValueError("タスク通知には許可したSlackチャンネルIDを指定してください")
+            allowed = {str(UUID(value)) for value in self.allowed_notion_data_sources}
+            if not {task_reminder.data_source_id, task_reminder.member_data_source_id} <= allowed:
+                raise ValueError("タスク通知には許可したNotionデータソースIDを指定してください")
         return self
 
     def agent_policy(self) -> AgentPolicy:
@@ -49,6 +58,7 @@ class Settings(AgentPolicy):
             "notion_parents",
             "calendars",
             "daily_schedule_reminder",
+            "daily_task_reminder",
         }
         data = {}
         for field in cls.model_fields:

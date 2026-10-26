@@ -178,7 +178,7 @@ def _slack(settings: Settings) -> None:
     auth = client.auth_test()
     if auth["team_id"] != settings.team_id:
         raise AgentError("wrong_workspace", "Slack Botのワークスペースが設定と一致しません。")
-    if settings.daily_schedule_reminder is not None:
+    if settings.daily_schedule_reminder is not None or settings.daily_task_reminder is not None:
         try:
             client.users_info(user=auth["user_id"])
         except SlackClientError, OSError:

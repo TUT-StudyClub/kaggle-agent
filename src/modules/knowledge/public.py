@@ -13,5 +13,8 @@ from .application.dto.commands import (
 from .application.dto.commands import (
     UpdateBlock as UpdateBlock,
 )
+from .application.dto.task_board import TaskBoardConfig as TaskBoardConfig
 from .application.facade import KnowledgeService as KnowledgeService
+from .application.use_cases.read_tasks import TaskBoardService as TaskBoardService
 from .domain.repositories import KnowledgeRepository as KnowledgeRepository
+from .domain.tasks import TaskNotification as TaskNotification

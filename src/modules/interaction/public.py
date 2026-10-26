@@ -1,5 +1,6 @@
 from .application.dto.jobs import JobStatusOutput as JobStatusOutput
 from .application.dto.reminders import DailyScheduleReminder as DailyScheduleReminder
+from .application.dto.reminders import DailyTaskReminder as DailyTaskReminder
 from .application.facade import InteractionFacade as InteractionFacade
 from .application.policies.access import AgentPolicy as AgentPolicy
 from .application.ports.messenger import Activity as Activity

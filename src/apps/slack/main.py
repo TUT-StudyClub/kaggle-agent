@@ -46,6 +46,7 @@ def run(settings: Settings) -> None:
                 target=run_reminders, args=(agent, stop), name="schedule-reminders", daemon=True
             )
             if settings.daily_schedule_reminder is not None
+            or settings.daily_task_reminder is not None
             else None
         )
         handler = SocketModeHandler(app, settings.slack_app_token.get_secret_value())
@@ -64,6 +65,12 @@ def run(settings: Settings) -> None:
                 print(
                     f"チーム予定の定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
                     f" / {reminder.calendar_alias} → {reminder.channel_id}",
+                    flush=True,
+                )
+            if reminder := settings.daily_task_reminder:
+                print(
+                    f"タスクの定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
+                    f" → {reminder.channel_id}",
                     flush=True,
                 )
             stop.wait()

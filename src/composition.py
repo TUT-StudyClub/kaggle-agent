@@ -10,7 +10,7 @@ from config import Settings
 from modules.interaction.composition import build_interaction
 from modules.interaction.public import InteractionFacade
 from modules.kaggle.composition import build_kaggle
-from modules.knowledge.composition import build_knowledge
+from modules.knowledge.composition import build_knowledge, build_task_board
 from modules.planning.composition import build_planning
 from modules.scheduling.composition import build_scheduling
 from shared.application.ports.clock import Clock
@@ -84,6 +84,12 @@ def build(settings: Settings, stack: ExitStack) -> tuple[App, InteractionFacade]
         planning.skillbook,
         clock=clock,
         daily_schedule_reminder=settings.daily_schedule_reminder,
+        daily_task_reminder=settings.daily_task_reminder,
+        task_board=(
+            build_task_board(notion_http, settings.daily_task_reminder)
+            if settings.daily_task_reminder is not None
+            else None
+        ),
         bot_user_id=auth["user_id"],
         kaggle=kaggle,
     )

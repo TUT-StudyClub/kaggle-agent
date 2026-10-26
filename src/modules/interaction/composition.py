@@ -3,13 +3,13 @@ from pathlib import Path
 from slack_sdk import WebClient
 
 from modules.kaggle.public import KaggleService
-from modules.knowledge.public import KnowledgeService
+from modules.knowledge.public import KnowledgeService, TaskBoardService
 from modules.planning.public import Planner, SkillBook
 from modules.scheduling.public import SchedulingService
 from shared.application.ports.clock import Clock
 from shared.infrastructure.clock import SystemClock
 
-from .application.dto.reminders import DailyScheduleReminder
+from .application.dto.reminders import DailyScheduleReminder, DailyTaskReminder
 from .application.facade import InteractionFacade
 from .application.policies.access import AgentPolicy
 from .application.ports.announcements import AnnouncementSender
@@ -32,6 +32,7 @@ from .application.use_cases.receive_message import ReceiveMessageUseCase
 from .application.use_cases.receive_reaction import ReceiveReactionUseCase
 from .application.use_cases.reconcile_job import ReconcileJobUseCase
 from .application.use_cases.remind_schedule import RemindScheduleUseCase
+from .application.use_cases.remind_tasks import RemindTasksUseCase
 from .domain.meetings import MeetingRepository
 from .domain.repositories import JobRepository
 from .infrastructure.messaging.slack import SlackMessenger
@@ -55,6 +56,7 @@ def build_agent(
     reminders: RemindScheduleUseCase | None = None,
     announcements: AnnouncementSender | None = None,
     meeting_receipts: MeetingRepository | None = None,
+    task_reminders: RemindTasksUseCase | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
     meetings = MeetingService(scheduling, announcements, meeting_receipts)
@@ -91,6 +93,7 @@ def build_agent(
         JobManagement(jobs),
         reminders,
         reactions=ReceiveReactionUseCase(policy, jobs, clock),
+        task_reminders=task_reminders,
     )
 
 
@@ -107,11 +110,25 @@ def build_interaction(
     daily_schedule_reminder: DailyScheduleReminder | None = None,
     bot_user_id: str | None = None,
     kaggle: KaggleService | None = None,
+    daily_task_reminder: DailyTaskReminder | None = None,
+    task_board: TaskBoardService | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
     jobs = SQLiteJobRepository(database)
     messenger = SlackMessenger(client, policy, jobs, bot_user_id=bot_user_id)
     reminders = None
+    task_reminders = None
+    if daily_task_reminder is not None:
+        if task_board is None:
+            raise ValueError("タスク通知用のNotion接続を設定してください")
+        task_reminders = RemindTasksUseCase(
+            daily_task_reminder,
+            policy.team_id,
+            task_board,
+            jobs,
+            SlackReminderSender(client, policy.channel_ids),
+            clock,
+        )
     if daily_schedule_reminder is not None:
         reminders = RemindScheduleUseCase(
             daily_schedule_reminder,
@@ -131,6 +148,7 @@ def build_interaction(
         skillbook,
         clock=clock,
         reminders=reminders,
+        task_reminders=task_reminders,
         announcements=SlackAnnouncementSender(client, policy.channel_ids, bot_user_id),
         meeting_receipts=jobs,
         kaggle=kaggle,

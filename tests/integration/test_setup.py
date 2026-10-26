@@ -345,10 +345,11 @@ def test_daily_reminder_rejects_unallowed_targets_and_invalid_schedule(tmp_path,
         )
 
 
-def test_runtime_starts_reminders_in_a_separate_thread(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tasks_only", [False, True])
+def test_runtime_starts_reminders_in_a_separate_thread(tmp_path, monkeypatch, tasks_only):
     from apps.slack.main import run
     from apps.worker.reminders import run_reminders
-    from modules.interaction.public import DailyScheduleReminder
+    from modules.interaction.public import DailyScheduleReminder, DailyTaskReminder
 
     config = settings(tmp_path).model_copy(
         update={
@@ -358,6 +359,17 @@ def test_runtime_starts_reminders_in_a_separate_thread(tmp_path, monkeypatch):
             ),
         }
     )
+    if tasks_only:
+        config = config.model_copy(
+            update={
+                "daily_schedule_reminder": None,
+                "daily_task_reminder": DailyTaskReminder(
+                    data_source_id="00000000-0000-0000-0000-000000000010",
+                    member_data_source_id="00000000-0000-0000-0000-000000000020",
+                    channel_id="C1",
+                ),
+            }
+        )
     monkeypatch.setattr("apps.slack.main.build", lambda *_: (Mock(), Mock()))
     workers = []
 
