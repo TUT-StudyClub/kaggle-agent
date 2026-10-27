@@ -2,7 +2,7 @@ from datetime import date
 
 from shared.errors import AgentError
 
-from ...domain.tasks import TaskBoardRepository, TaskMember, TaskNotification, TaskPerson
+from ...domain.tasks import BoardTask, TaskBoardRepository, TaskMember, TaskNotification, TaskPerson
 
 
 def normalized_name(value: str) -> str:
@@ -29,7 +29,12 @@ class TaskBoardService:
         self.repository = repository
 
     def tasks_on(self, day: date) -> list[TaskNotification]:
-        tasks = self.repository.tasks_on(day)
+        return self._notifications(self.repository.tasks_on(day))
+
+    def overdue_tasks(self) -> list[TaskNotification]:
+        return self._notifications(self.repository.overdue_tasks())
+
+    def _notifications(self, tasks: list[BoardTask]) -> list[TaskNotification]:
         members = self.repository.members() if any(t.assignees for t in tasks) else []
         if len({m.slack_user_id for m in members}) != len(members):
             raise AgentError("task_member_duplicate", "Member DBのSlack User IDが重複しています。")

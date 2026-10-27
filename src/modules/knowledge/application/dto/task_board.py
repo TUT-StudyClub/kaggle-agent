@@ -12,7 +12,9 @@ class TaskBoardConfig(ValueObject):
     date_property: str = Field(default="Dead", min_length=1)
     assignee_property: str = Field(default="User", min_length=1)
     status_property: str = Field(default="Status", min_length=1)
-    excluded_statuses: frozenset[str] = frozenset({"finish"})
+    excluded_statuses: frozenset[str] = frozenset({"finish", "Done"})
+    overdue_alert_property: str | None = Field(default=None, min_length=1)
+    overdue_alert_value: str = Field(default="🚨 期限超過 🚨", min_length=1)
 
     @field_validator("data_source_id", "member_data_source_id")
     @classmethod

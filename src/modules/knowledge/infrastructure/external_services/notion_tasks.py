@@ -87,6 +87,40 @@ class NotionTaskBoard(TaskBoardRepository):
             query=True,
             payload={"filter": {"and": conditions}},
         )
+        return self._tasks(rows, day=day)
+
+    def overdue_tasks(self) -> list[BoardTask]:
+        c = self.config
+        if c.overdue_alert_property is None:
+            return []
+        self._schema(
+            c.data_source_id,
+            {
+                c.title_property: "title",
+                c.assignee_property: "people",
+                c.status_property: "status",
+                c.overdue_alert_property: "formula",
+            },
+        )
+        conditions = [
+            {
+                "property": c.overdue_alert_property,
+                "formula": {"string": {"equals": c.overdue_alert_value}},
+            },
+            *(
+                {"property": c.status_property, "status": {"does_not_equal": status}}
+                for status in sorted(c.excluded_statuses)
+            ),
+        ]
+        rows = self._pages(
+            f"data_sources/{c.data_source_id}/query",
+            query=True,
+            payload={"filter": {"and": conditions}},
+        )
+        return self._tasks(rows)
+
+    def _tasks(self, rows: list[dict], *, day: date | None = None) -> list[BoardTask]:
+        c = self.config
         tasks = []
         users: dict[str, TaskPerson] = {}
         for row in rows:
@@ -96,24 +130,36 @@ class NotionTaskBoard(TaskBoardRepository):
             status = props[c.status_property].get("status") or {}
             if status.get("name") in c.excluded_statuses:
                 continue
-            value = props[c.date_property].get("date")
-            if not value:
-                continue
-            start = value["start"]
-            if len(start) == 10:
-                local_day = date.fromisoformat(start)
+            start = ""
+            if day is None:
+                assert c.overdue_alert_property is not None
+                formula = props[c.overdue_alert_property]["formula"]
+                if formula.get("type") != "string":
+                    raise AgentError(
+                        "task_alert_type", "期限アラートの数式が文字列を返すか確認してください。"
+                    )
+                if formula.get("string") != c.overdue_alert_value:
+                    continue
             else:
-                local = datetime.fromisoformat(start)
-                if local.tzinfo is None:
-                    timezone = value.get("time_zone")
-                    if not timezone:
-                        raise AgentError(
-                            "task_date_timezone", "タスクの日付のタイムゾーンを確認してください。"
-                        )
-                    local = local.replace(tzinfo=ZoneInfo(timezone))
-                local_day = local.astimezone(JST).date()
-            if local_day != day:
-                continue
+                value = props[c.date_property].get("date")
+                if not value:
+                    continue
+                start = value["start"]
+                if len(start) == 10:
+                    local_day = date.fromisoformat(start)
+                else:
+                    local = datetime.fromisoformat(start)
+                    if local.tzinfo is None:
+                        timezone = value.get("time_zone")
+                        if not timezone:
+                            raise AgentError(
+                                "task_date_timezone",
+                                "タスクの日付のタイムゾーンを確認してください。",
+                            )
+                        local = local.replace(tzinfo=ZoneInfo(timezone))
+                    local_day = local.astimezone(JST).date()
+                if local_day != day:
+                    continue
             prop = props[c.assignee_property]
             people = prop["people"]
             if len(people) >= 25 or prop.get("has_more"):

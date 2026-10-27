@@ -40,7 +40,7 @@ def prop(kind, text):
     return {"type": kind, kind: [{"plain_text": text}]}
 
 
-def task(index=1, start="2026-10-26", status="ToDo", people=None, **extra):
+def task(index=1, start="2026-10-26", status="ToDo", people=None, alert="", **extra):
     return {
         "id": f"00000000-0000-0000-0000-{index:012}",
         "url": "https://www.notion.so/task",
@@ -48,6 +48,7 @@ def task(index=1, start="2026-10-26", status="ToDo", people=None, **extra):
             "Name": prop("title", f"タスク{index}"),
             "Dead": {"type": "date", "date": {"start": start, "end": "2026-10-30"}},
             "Status": {"type": "status", "status": {"name": status}},
+            "期限アラート": {"type": "formula", "formula": {"type": "string", "string": alert}},
             "User": {
                 "id": "assignee",
                 "type": "people",
@@ -113,7 +114,13 @@ def board_runtime(tmp_path):
             )
         if request.method == "GET":
             schema = (
-                {"Name": "title", "Dead": "date", "Status": "status", "User": "people"}
+                {
+                    "Name": "title",
+                    "Dead": "date",
+                    "Status": "status",
+                    "User": "people",
+                    "期限アラート": "formula",
+                }
                 if TASKS in path
                 else {"Name": "title", "Slack User ID": "rich_text", "Calendar Emails": "rich_text"}
             )
@@ -152,7 +159,7 @@ def board_runtime(tmp_path):
         yield restart(), restart, clock, slack, rows, member_rows, users, requests, path, failures
 
 
-def test_jst_start_date_only_finish_excluded_and_restart_is_idempotent(board_runtime):
+def test_jst_start_date_completed_tasks_excluded_and_restart_is_idempotent(board_runtime):
     usecase, restart, clock, slack, rows, _, _, requests, path, _ = board_runtime
     rows[:] = [
         task(1),
@@ -173,14 +180,15 @@ def test_jst_start_date_only_finish_excluded_and_restart_is_idempotent(board_run
     assert sent["channel"] == "C1" and "thread_ts" not in sent
     assert sent["text"].startswith("今日のタスク（10/26）")
     assert "タスクを開く" not in sent["text"] and "https://www.notion.so/task" not in sent["text"]
-    assert all(f"タスク{i}" in sent["text"] for i in (1, 2, 5, 8))
-    assert all(f"タスク{i}" not in sent["text"] for i in (3, 4, 6, 7))
+    assert all(f"タスク{i}" in sent["text"] for i in (1, 5, 8))
+    assert all(f"タスク{i}" not in sent["text"] for i in (2, 3, 4, 6, 7))
     assert "<@U1>" in sent["text"] and "担当者: 未設定" in sent["text"]
     assert "<!channel>" not in sent["text"]
     query = next(
         json.loads(r.content) for r in requests if r.method == "POST" and TASKS in r.url.path
     )
     assert {"property": "Status", "status": {"does_not_equal": "finish"}} in query["filter"]["and"]
+    assert {"property": "Status", "status": {"does_not_equal": "Done"}} in query["filter"]["and"]
     assert sum(r.url.path == f"/users/{PERSON}" for r in requests) == 1
     reads = len(requests)
     restart().execute()
@@ -369,7 +377,7 @@ def test_task_reminder_json_and_allowlist_validation(tmp_path):
     settings = Settings.load(path)
     assert settings.daily_task_reminder is not None
     assert settings.daily_task_reminder.hour == 9
-    assert settings.daily_task_reminder.excluded_statuses == {"finish"}
+    assert settings.daily_task_reminder.excluded_statuses == {"finish", "Done"}
     assert "daily_task_reminder" not in settings.agent_policy().model_dump()
     for override in ({"channel_id": "C2"}, {"hour": 24}, {"data_source_id": PERSON}):
         with pytest.raises(ValidationError):
@@ -413,3 +421,113 @@ def test_root_composition_wires_task_reminder_without_ai(
     slack.chat_postMessage.assert_called_once()
     assert "担当者: <@U1>" in slack.chat_postMessage.call_args.kwargs["text"]
     planning.plan.assert_not_called()
+
+
+@pytest.fixture
+def overdue_runtime(board_runtime):
+    usecase, restart, *rest = board_runtime
+    config = usecase.config.model_copy(update={"overdue_alert_property": "期限アラート"})
+    usecase.config = config
+    usecase.board.repository.config = config
+
+    def configured_restart():
+        result = restart()
+        result.config = config
+        return result
+
+    return (usecase, configured_restart, *rest)
+
+
+def test_daily_summary_uses_alert_value_and_excludes_completed_tasks(overdue_runtime):
+    usecase, restart, _, slack, rows, _, _, requests, _, _ = overdue_runtime
+    rows[:] = [
+        task(1),
+        task(2, start="2000-01-01", alert="🚨 期限超過 🚨"),
+        task(3, start="2000-01-01", alert=""),
+        task(4, start="2000-01-01", alert="🚨 期限超過 🚨", status="finish"),
+        task(5, start="2000-01-01", alert="🚨 期限超過 🚨", status="Done"),
+        task(6, start="2000-01-01", alert="🚨 期限超過 🚨", archived=True),
+        task(7, start="2099-01-01", alert="🚨 期限超過 🚨", people=[]),
+        task(8, start="2000-01-01", alert="期限が近い"),
+        task(9, status="Done"),
+    ]
+    usecase.execute()
+    sent = slack.chat_postMessage.call_args.kwargs
+    assert sent["channel"] == "C1"
+    today, overdue = sent["text"].split("\n\n")
+    assert today.startswith("今日のタスク（10/26）") and "タスク1" in today
+    assert overdue.startswith("期限超過のタスク（10/26）")
+    assert "タスク2" in overdue and "タスク7" in overdue
+    assert "<@U1>" in overdue and "担当者: 未設定" in overdue
+    assert all(f"タスク{i}" not in sent["text"] for i in (3, 4, 5, 6, 8, 9))
+    queries = [
+        json.loads(r.content) for r in requests if r.method == "POST" and TASKS in r.url.path
+    ]
+    overdue_filter = next(
+        q["filter"]["and"]
+        for q in queries
+        if any(f["property"] == "期限アラート" for f in q["filter"]["and"])
+    )
+    assert {
+        "property": "期限アラート",
+        "formula": {"string": {"equals": "🚨 期限超過 🚨"}},
+    } in overdue_filter
+    assert all(f["property"] != "Dead" for f in overdue_filter)
+    for status in ("finish", "Done"):
+        assert {"property": "Status", "status": {"does_not_equal": status}} in overdue_filter
+    restart().execute()
+    slack.chat_postMessage.assert_called_once()
+
+
+def test_overdue_without_today_repeats_daily_until_completed(overdue_runtime):
+    usecase, restart, clock, slack, rows, _, _, _, _, _ = overdue_runtime
+    rows[:] = [task(start="2000-01-01", alert="🚨 期限超過 🚨")]
+    usecase.execute()
+    assert slack.chat_postMessage.call_args.kwargs["text"].startswith("期限超過のタスク（10/26）")
+    restart().execute()
+    slack.chat_postMessage.assert_called_once()
+    clock.value = "2026-10-27T09:00:00+09:00"
+    restart().execute()
+    assert slack.chat_postMessage.call_count == 2
+    rows[0]["properties"]["Status"]["status"]["name"] = "Done"
+    clock.value = "2026-10-28T09:00:00+09:00"
+    restart().execute()
+    assert slack.chat_postMessage.call_count == 2
+
+
+def test_overdue_selection_does_not_depend_on_dead_property(overdue_runtime):
+    usecase, _, _, _, rows, _, _, _, _, _ = overdue_runtime
+    rows[:] = [task(alert="🚨 期限超過 🚨")]
+    del rows[0]["properties"]["Dead"]
+    tasks = usecase.board.overdue_tasks()
+    assert len(tasks) == 1 and tasks[0].slack_user_ids == {"U1"}
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing_alert", "wrong_type", "unmatched_person", "outside_channel"]
+)
+def test_overdue_read_or_identity_failure_does_not_send_partial_summary(overdue_runtime, failure):
+    usecase, _, _, slack, rows, members, users, _, path, _ = overdue_runtime
+    rows[:] = [task(1, people=[]), task(2, start="2000-01-01", alert="🚨 期限超過 🚨")]
+    if failure == "missing_alert":
+        del rows[1]["properties"]["期限アラート"]
+    elif failure == "wrong_type":
+        rows[1]["properties"]["期限アラート"]["formula"] = {"type": "boolean", "boolean": True}
+    elif failure == "unmatched_person":
+        users[PERSON]["name"] = "未知の担当者"
+    else:
+        members[0]["properties"]["Slack User ID"] = prop("rich_text", "U9")
+    usecase.execute()
+    slack.chat_postMessage.assert_not_called()
+    with sqlite3.connect(path) as db:
+        assert not db.execute("SELECT * FROM schedule_reminders").fetchall()
+
+
+def test_empty_overdue_summary_does_not_post(overdue_runtime):
+    usecase, restart, _, slack, rows, _, _, requests, _, _ = overdue_runtime
+    rows[:] = [task(start="2000-01-01", alert="")]
+    usecase.execute()
+    count = len(requests)
+    restart().execute()
+    assert len(requests) == count
+    slack.chat_postMessage.assert_not_called()

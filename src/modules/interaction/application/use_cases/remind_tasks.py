@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
 
 
-def task_reminder_text(day: datetime, tasks: list[TaskNotification]) -> str:
-    lines = [f"今日のタスク（{day.month}/{day.day}）"]
+def task_reminder_text(
+    day: datetime, tasks: list[TaskNotification], *, heading: str = "今日のタスク"
+) -> str:
+    lines = [f"{heading}（{day.month}/{day.day}）"]
     for task in sorted(tasks, key=lambda t: (t.title, t.id)):
         title = escape(" ".join(task.title.split()), quote=False)
         lines.append(f"• {title}")
@@ -63,23 +65,30 @@ class RemindTasksUseCase:
             if state is not None:
                 return
             tasks = self.board.tasks_on(now.date())
+            overdue = self.board.overdue_tasks() if self.config.overdue_alert_property else []
+            all_tasks = tasks + overdue
             text = ""
-            if tasks:
+            if all_tasks:
                 members = self.sender.human_members(self.config.channel_id)
-                assigned = set().union(*(t.slack_user_ids for t in tasks))
+                assigned = set().union(*(t.slack_user_ids for t in all_tasks))
                 if not members or not assigned <= members:
                     raise AgentError(
                         "task_channel_member_missing",
                         "タスク担当者が通知先チャンネルにいるか確認してください。",
                     )
-                text = task_reminder_text(now, tasks)
+                sections = [task_reminder_text(now, tasks)] if tasks else []
+                if overdue:
+                    sections.append(task_reminder_text(now, overdue, heading="期限超過のタスク"))
+                text = "\n\n".join(sections)
             if self.clock.now().astimezone(JST).date() != now.date():
                 return
             if len(text) > 35000:
-                raise AgentError("task_reminder_too_large", "今日のタスクの通知が長すぎます。")
-            if not self.repository.reserve_reminder(key, self.clock.timestamp(), empty=not tasks):
+                raise AgentError("task_reminder_too_large", "タスクの通知が長すぎます。")
+            if not self.repository.reserve_reminder(
+                key, self.clock.timestamp(), empty=not all_tasks
+            ):
                 return
-            if not tasks:
+            if not all_tasks:
                 return
             try:
                 ts = self.sender.send(self.config.channel_id, text)
