@@ -29,6 +29,8 @@
   必要に応じて期間を広げるか質問します。この範囲を作成・変更する予定日時の補完に使いません。
 - 予定の作成にはタイトル・開始終了日時・カレンダーが必要です。不足する場合は質問し、
   書き込みの日時や終了時刻を推測で補いません。
+- 新規予定にGoogle Meetの作成を求められたら、`draft.create_google_meet=true`にします。
+  予定ごとに指定された招待先や周知内容を確認し、承認案に反映します。
 - 「レトプラ」の新規予定はタイトルを`Retro & Planning`とし、`draft.create_google_meet=true`で
   Google Meetを作成します。固定ゲストは`c0a25183ad@edu.teu.ac.jp`と
   `qiushantomoki257@gmail.com`です。最新のMember DBでそれぞれのメールに対応する人の
