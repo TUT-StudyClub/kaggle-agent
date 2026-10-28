@@ -18,20 +18,20 @@ class FixedClock(Clock):
         return 100.0
 
 
-def test_approval_expiry_and_planning_time_use_injected_clock(harness):
+def test_approval_has_no_expiry_and_planning_time_uses_injected_clock(harness):
     clock = FixedClock()
     harness.configure(clock=clock)
     harness.planner.steps = [Plan(action=CreateEvent(calendar_alias="personal", draft=draft()))]
     job_id = harness.submit()
     harness.agent.run_once()
     waiting = harness.jobs.get(job_id)
-    assert waiting.approval_expires_at == clock.timestamp() + harness.policy.approval_minutes * 60
+    assert waiting.approval_expires_at is None
     assert harness.planner.requests[0].now == clock.current.isoformat()
+    clock.current += timedelta(days=30)
     harness.approve(job_id)
-    clock.current += timedelta(minutes=harness.policy.approval_minutes, seconds=1)
     harness.agent.run_once()
-    assert harness.jobs.get(job_id).error_code == "approval_expired"
-    assert harness.calendar.writes == 0
+    assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    assert harness.calendar.writes == 1
 
 
 def test_worker_rechecks_actor_permissions_before_approved_write(harness):

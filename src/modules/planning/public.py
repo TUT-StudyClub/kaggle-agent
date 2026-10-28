@@ -1,3 +1,5 @@
+from .application.dto.approval import ApprovalDecision as ApprovalDecision
+from .application.dto.approval import ApprovalRequest as ApprovalRequest
 from .application.dto.meetings import CreateMeeting as CreateMeeting
 from .application.dto.meetings import ListAnnouncementChannels as ListAnnouncementChannels
 from .application.dto.meetings import MeetingAnnouncement as MeetingAnnouncement

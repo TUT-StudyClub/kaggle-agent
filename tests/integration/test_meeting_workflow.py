@@ -121,6 +121,18 @@ def test_one_approval_covers_verified_invites_and_announcement(meeting):
     assert harness.calendar.writes == len(announcements.sent) == 1
 
 
+def test_invited_members_are_mentioned_in_announcement(meeting):
+    harness, _, announcements = meeting
+    harness.planner.steps = [Plan(action=action())] * 2
+    job_id, _ = prepare(harness)
+    preview = harness.jobs.pending_notifications()[0][2]
+    assert "メンション: 中川, 秋山" in preview
+    assert "<@U2>" not in preview
+    harness.approve(job_id)
+    assert harness.agent.run_once()
+    assert announcements.sent == [("C1", "<@U2> <@U3>\n10/23 18:30〜19:00 面談を行うよ。", job_id)]
+
+
 @pytest.mark.parametrize("emails", [frozenset(), frozenset({"n@example.com", "other@example.com"})])
 def test_missing_or_ambiguous_mail_becomes_clarification_without_writes(meeting, emails):
     harness, members, announcements = meeting

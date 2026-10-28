@@ -71,6 +71,7 @@ class Event(ValueObject):
     guest_emails: frozenset[str] = frozenset()
     participants_complete: bool = False
     blocks_time: bool = True
+    meet_url: str = ""
 
     def busy_period(self) -> TimeRange | None:
         if not self.blocks_time:
@@ -92,6 +93,7 @@ class EventDraft(ValueObject):
     period: TimeRange
     guest_emails: tuple[str, ...] = ()
     label: EventLabel | None = None
+    create_google_meet: bool = False
 
     @field_validator("guest_emails")
     @classmethod

@@ -6,7 +6,7 @@ import pytest
 
 from modules.planning.infrastructure.codex_cli import CodexCLIPlanner
 from modules.planning.infrastructure.skills import load_skillbook
-from modules.planning.public import ResponseRequest
+from modules.planning.public import ApprovalRequest, ResponseRequest
 from shared.errors import AgentError
 
 
@@ -64,3 +64,39 @@ def test_classifier_uses_separate_schema_rules_and_disables_tools(
     else:
         assert planner.check_response(request).should_respond is expected
     assert planner.last_web_searches == []
+
+
+@pytest.mark.parametrize(
+    "output,expected", [('{"approves": true}', True), ('{"approves": "true"}', None)]
+)
+def test_approval_classifier_uses_separate_strict_tool_free_schema(monkeypatch, output, expected):
+    planner = CodexCLIPlanner(load_skillbook())
+    monkeypatch.setattr(planner, "check_auth", lambda: None)
+    process = MagicMock()
+    process.__enter__.return_value = process
+    process.returncode = 0
+    popen = Mock(return_value=process)
+    monkeypatch.setattr("modules.planning.infrastructure.codex_cli.subprocess.Popen", popen)
+
+    def respond(input_text, timeout):
+        command = popen.call_args.args[0]
+        assert 'web_search="disabled"' in command
+        schema = json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
+        assert set(schema["properties"]) == {"approves"}
+        data = json.loads(input_text.split("\n", 1)[1])
+        assert data["thread"] == [{"role": "assistant", "text": "承認案"}]
+        Path(command[command.index("--output-last-message") + 1]).write_text(output)
+        return "", ""
+
+    process.communicate.side_effect = respond
+    request = ApprovalRequest(
+        instruction="その案でお願いします",
+        requester_user_id="U1",
+        addressing="followup",
+        thread='[{"role":"assistant","text":"承認案"}]',
+    )
+    if expected is None:
+        with pytest.raises(AgentError):
+            planner.check_approval(request)
+    else:
+        assert planner.check_approval(request).approves is expected

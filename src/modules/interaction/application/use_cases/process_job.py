@@ -11,7 +11,6 @@ from modules.interaction.application.services.availability_reply import availabi
 from modules.interaction.application.services.completion import JobCompletion
 from modules.interaction.application.services.meetings import meeting_preview
 from modules.interaction.application.services.tools import ToolRegistry
-from modules.interaction.domain.approval import is_approval_reply
 from modules.interaction.domain.models import (
     Job,
     JobStatus,
@@ -19,13 +18,13 @@ from modules.interaction.domain.models import (
 from modules.interaction.domain.repositories import JobRepository
 from modules.planning.public import (
     WRITE_KINDS,
+    ApprovalRequest,
     Clarify,
     CreateMeeting,
     Plan,
     Planner,
     PlanningRequest,
     Reply,
-    ResponseRequest,
 )
 from modules.scheduling.public import (
     FindFree,
@@ -70,34 +69,53 @@ class ProcessJobUseCase:
         try:
             if not self.settings.allows(job.message.source):
                 raise AgentError("forbidden_source", "Slackの許可範囲外です。")
+            if not job.plan_json and self.jobs.pending_approval_count(
+                job.message.source, self.clock.timestamp()
+            ):
+                if followup and not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
+                try:
+                    decision = self.planner.check_approval(
+                        ApprovalRequest(
+                            instruction=job.message.text,
+                            requester_user_id=job.message.source.user_id,
+                            addressing=job.message.addressing,
+                            thread=self._thread_at_message(job),
+                        )
+                    )
+                except AgentError:
+                    if followup and not self.jobs.accepts_followup(job.message):
+                        self._ignore(job, "tracking_stopped")
+                    else:
+                        self.completion.finish(
+                            job,
+                            {},
+                            "承認の意思を確認できなかったよ。操作は実行していないので、"
+                            "もう一度伝えるか、承認案にリアクションしてね。",
+                        )
+                    return True
+                if followup and not self.jobs.accepts_followup(job.message):
+                    self._ignore(job, "tracking_stopped")
+                    return True
+                if decision.approves:
+                    if self.jobs.approve_pending(
+                        job.message.source, self.clock.timestamp(), job.message.message_ts
+                    ):
+                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
+                    else:
+                        self.completion.finish(
+                            job,
+                            {},
+                            "承認する案を特定できないよ。対象の承認案にリアクションしてね。",
+                        )
+                    return True
             if followup:
                 if not self.jobs.accepts_followup(job.message):
                     self._ignore(job, "tracking_stopped")
                     return True
                 thread = self._thread_at_message(job)
                 context = self.jobs.context(job.message.source)
-                stored = json.loads(context)
-                decision = self.planner.check_response(
-                    ResponseRequest(
-                        instruction=job.message.text,
-                        requester_user_id=job.message.source.user_id,
-                        thread=thread,
-                        context=json.dumps(
-                            {
-                                key: stored[key]
-                                for key in ("dialogue", "pending_clarification")
-                                if key in stored
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                )
-                if not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                if not decision.should_respond:
-                    self._ignore(job, "not_addressed")
-                    return True
                 approval = re.fullmatch(r"承認\s+([a-f0-9]{32})", job.message.text.strip())
                 if approval:
                     approved = self.jobs.approve(
@@ -112,22 +130,12 @@ class ProcessJobUseCase:
                     else:
                         self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
                     return True
-                if is_approval_reply(job.message.text):
-                    if self.jobs.approve_pending(job.message.source, self.clock.timestamp()):
-                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
-                        return True
-                    if not stored.get("pending_clarification"):
-                        self.completion.finish(
-                            job,
-                            {},
-                            "承認・返答できる確認がないか、期限が切れているよ。"
-                            "Botの確認メッセージと同じスレッドで返信してね。",
-                        )
-                        return True
             activity_started = True
             self.activity.update(job.message.source, Activity.READING)
             if job.plan_json:
-                if (job.approval_expires_at or 0) < self.clock.timestamp():
+                if job.approval_expires_at is not None and (
+                    job.approval_expires_at < self.clock.timestamp()
+                ):
                     raise AgentError(
                         "approval_expired",
                         "承認の有効期限が切れたため、操作は実行していないよ。再度依頼してね。",
@@ -238,8 +246,7 @@ class ProcessJobUseCase:
                     job = job.transition(
                         JobStatus.AWAITING_APPROVAL,
                         plan_json=plan.model_dump_json(),
-                        approval_expires_at=self.clock.timestamp()
-                        + self.settings.approval_minutes * 60,
+                        approval_expires_at=None,
                     )
                     preview = json.dumps(
                         plan.action.model_dump(mode="json"), ensure_ascii=False, indent=2
@@ -267,9 +274,6 @@ class ProcessJobUseCase:
                     return True
                 observations.append(result)
         except AgentError as error:
-            if followup and not activity_started:
-                self._ignore(job, "response_check_failed", error.code)
-                return True
             failed = job.transition(JobStatus.FAILED, error_code=error.code)
             self.jobs.notify(
                 failed,
@@ -279,9 +283,6 @@ class ProcessJobUseCase:
                 outcome=error.code,
             )
         except Exception:
-            if followup and not activity_started:
-                self._ignore(job, "response_check_failed", "internal_error")
-                return True
             # SDK例外・ValidationError等をそのままSlackやログへ流さない。
             failed = job.transition(JobStatus.FAILED, error_code="internal_error")
             self.jobs.notify(

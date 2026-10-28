@@ -1,4 +1,5 @@
 import json
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -44,7 +45,7 @@ def start(harness):
     harness.planner.requests.clear()
 
 
-def test_followup_without_mention_is_answered_after_response_check(harness):
+def test_followup_without_mention_is_answered(harness):
     start(harness)
     harness.planner.response_steps = [True]
     harness.planner.steps = [Plan(action=Reply(text="明日も大丈夫だよ"))]
@@ -52,42 +53,112 @@ def test_followup_without_mention_is_answered_after_response_check(harness):
     assert harness.agent.run_once()
     harness.agent.deliver_notifications()
     assert harness.messenger.sent == ["明日も大丈夫だよ"]
-    assert harness.planner.response_requests[0].requester_user_id == "U1"
+    assert not harness.planner.response_requests
     assert harness.planner.requests[0].instruction == "それって明日でも大丈夫？"
 
 
-def test_human_conversation_has_no_reply_activity_tools_or_context_update(harness):
-    start(harness)
-    previous = harness.jobs.context(harness.source)
+def test_approval_in_tracked_thread_uses_intent_not_response_decision(harness):
+    job_id = waiting(harness)
     harness.planner.response_steps = [False]
-    listener(harness)("<@U2> どう思う？", "1001.000001")
+    harness.planner.approval_steps = [True]
+    listener(harness)("その内容で進めちゃって大丈夫です、お願いします！", "2001.000001")
+    assert harness.agent.run_once()
+    assert not harness.planner.response_requests
+    assert harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    assert harness.calendar.writes == 1
+
+
+@pytest.mark.parametrize(
+    "text", ["ちょっと待って", "日程を変更してからお願いします", "承認したっけ？"]
+)
+def test_non_approval_does_not_execute_pending_operation(harness, text):
+    job_id = waiting(harness)
+    harness.planner.approval_steps = [False]
+    harness.planner.response_steps = [False]
+    listener(harness)(text, "2001.000001")
+    assert harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.AWAITING_APPROVAL
+    assert harness.calendar.writes == 0
+
+
+@pytest.mark.parametrize("channel_type,prefix", [("im", ""), ("channel", "<@BOT> ")])
+def test_natural_approval_works_in_dm_and_mention(harness, channel_type, prefix):
+    job_id = waiting(harness)
+    harness.planner.approval_steps = [True]
+    listener(harness)(
+        prefix + "その案で進めてもらえると助かります", "2001.000001", channel_type=channel_type
+    )
+    assert harness.agent.run_once()
+    assert harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    assert harness.calendar.writes == 1
+
+
+def test_approval_message_predating_proposal_cannot_approve_it(harness):
+    job_id = waiting(harness)
+    harness.planner.approval_steps = [True]
+    listener(harness)("それでお願いします", "1999.000001")
+    assert harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.AWAITING_APPROVAL
+    assert harness.calendar.writes == 0
+
+
+def test_approval_classifier_failure_does_not_write_and_explains_retry(harness):
+    job_id = waiting(harness)
+    harness.planner.approval_steps = [AgentError("ai_timeout", "timeout")]
+    listener(harness)("その内容でお願いできますか", "2001.000001")
     assert harness.agent.run_once()
     harness.agent.deliver_notifications()
-    assert not harness.messenger.sent and not harness.messenger.activities
-    assert not harness.planner.requests
-    assert harness.jobs.context(harness.source) == previous
-    assert harness.knowledge.writes == harness.calendar.writes == 0
-    with harness.jobs.connection() as db:
-        assert db.execute(
-            "SELECT outcome FROM audit_logs ORDER BY rowid DESC LIMIT 1"
-        ).fetchone() == ("not_addressed",)
-        assert db.execute("SELECT status FROM jobs ORDER BY rowid DESC LIMIT 1").fetchone() == (
-            "ignored",
+    assert harness.jobs.get(job_id).status == JobStatus.AWAITING_APPROVAL
+    assert harness.calendar.writes == 0
+    assert any("確認できなかった" in message for message in harness.messenger.sent)
+
+
+def test_explicit_approval_with_multiple_pending_proposals_asks_for_reaction(harness):
+    first = waiting(harness)
+    second = harness.submit("別の操作", "second")
+    job = harness.jobs.get(second)
+    harness.jobs.save(
+        job.model_copy(
+            update={
+                "status": JobStatus.AWAITING_APPROVAL,
+                "plan_json": harness.jobs.get(first).plan_json,
+                "approval_expires_at": time.time() + 600,
+            }
         )
-
-
-@pytest.mark.parametrize("failure", [AgentError("ai_timeout", "timeout"), ValueError("broken")])
-def test_response_check_failure_stays_silent(harness, monkeypatch, failure):
-    start(harness)
-
-    def fail(request):
-        raise failure
-
-    monkeypatch.setattr(harness.planner, "check_response", fail)
-    listener(harness)("そうなんだ", "1001.000001")
+    )
+    harness.planner.approval_steps = [True]
+    listener(harness)("承認", "2001.000001")
     assert harness.agent.run_once()
-    assert not harness.messenger.sent and not harness.messenger.activities
-    assert not harness.jobs.pending_notifications() and not harness.planner.requests
+    harness.agent.deliver_notifications()
+    assert any("特定できない" in text and "リアクション" in text for text in harness.messenger.sent)
+    assert harness.jobs.get(first).status == JobStatus.AWAITING_APPROVAL
+    assert harness.jobs.get(second).status == JobStatus.AWAITING_APPROVAL
+    assert harness.calendar.writes == 0
+
+
+def test_all_allowed_participants_are_answered_in_tracked_thread(harness):
+    harness.configure(
+        policy=harness.policy.model_copy(update={"user_ids": frozenset({"U1", "U2"})})
+    )
+    start(harness)
+    harness.planner.steps = [Plan(action=Reply(text="応答したよ"))]
+    listener(harness)("<@U1> どう思う？", "1001.000001", user="U2")
+    assert harness.agent.run_once()
+    harness.agent.deliver_notifications()
+    assert harness.messenger.sent == ["応答したよ"]
+    assert harness.planner.requests[0].instruction == "<@U1> どう思う？"
+    assert not harness.planner.response_requests
+
+
+def test_untracked_thread_and_forbidden_user_are_ignored(harness):
+    start(harness)
+    post = listener(harness)
+    post("質問", "1001.000001", thread_ts="9000.000001")
+    post("質問", "1002.000001", user="FORBIDDEN")
+    assert not harness.agent.run_once()
+    assert not harness.planner.requests
 
 
 def test_stop_applies_to_every_user_survives_restart_and_only_mention_resumes(harness):
@@ -177,13 +248,12 @@ def test_queued_followup_before_stop_is_ignored_even_after_resume(harness):
     assert len(harness.planner.requests) == 1
 
 
-@pytest.mark.parametrize("stop_during", ["check", "plan"])
-def test_stop_during_ai_call_suppresses_followup_result(harness, monkeypatch, stop_during):
+def test_stop_during_ai_call_suppresses_followup_result(harness, monkeypatch):
     start(harness)
     post = listener(harness)
     harness.planner.response_steps = [True]
     harness.planner.steps = [Plan(action=Reply(text="送ってはいけない回答"))]
-    name = "check_response" if stop_during == "check" else "plan"
+    name = "plan"
     original = getattr(harness.planner, name)
 
     def stop_then_return(request):
@@ -203,11 +273,11 @@ def test_short_approval_is_checked_before_it_can_authorize_a_write(harness, resp
     job_id = waiting(harness)
     harness.messenger.activities.clear()
     harness.planner.response_steps = [respond]
+    harness.planner.approval_steps = [respond]
     listener(harness)("OK", "3000.000001")
     # 応答先を確定するまでは承認されない。承認待ちでも判定ジョブは処理できる。
     assert harness.jobs.get(job_id).status == JobStatus.AWAITING_APPROVAL
     assert harness.agent.run_once()
-    assert not harness.messenger.activities
     assert harness.calendar.writes == 0
     assert harness.jobs.get(job_id).status == (
         JobStatus.QUEUED if respond else JobStatus.AWAITING_APPROVAL
@@ -228,7 +298,7 @@ def test_dm_and_explicit_mention_bypass_response_check(harness):
     assert len(harness.planner.requests) == 2
 
 
-def test_response_check_uses_speakers_and_only_history_up_to_current_message(harness):
+def test_planning_uses_only_history_up_to_current_message(harness):
     start(harness)
     harness.messenger.thread_text = json.dumps(
         [
@@ -237,12 +307,12 @@ def test_response_check_uses_speakers_and_only_history_up_to_current_message(har
             {"role": "user", "user": "U2", "ts": "1002.000001", "text": "未来の発言"},
         ]
     )
-    harness.planner.response_steps = [False]
+    harness.planner.steps = [Plan(action=Reply(text="回答"))]
     listener(harness)("質問", "1001.000001")
     harness.agent.run_once()
-    history = json.loads(harness.planner.response_requests[0].thread)
+    history = json.loads(harness.planner.requests[0].thread)
     assert [item["user"] for item in history] == ["BOT", "U1"]
-    assert "未来の発言" not in harness.planner.response_requests[0].thread
+    assert "未来の発言" not in harness.planner.requests[0].thread
 
 
 def test_bare_mention_resumes_without_an_ai_request(harness):
@@ -270,14 +340,14 @@ def test_bare_mention_starts_tracking_before_first_job_and_survives_restart(harn
     assert harness.agent.run_once()
     harness.agent.deliver_notifications()
     assert harness.messenger.sent == ["おはよう！"]
-    assert harness.planner.response_requests[0].instruction == "おはよう"
+    assert harness.planner.requests[0].instruction == "おはよう"
 
 
-def test_bare_mention_tracking_is_scoped_to_user_and_thread(harness):
+def test_bare_mention_tracking_is_scoped_to_thread(harness):
     post = listener(harness)
     post("<@BOT>", "1001.000001")
     assert harness.agent.tracks(harness.source)
-    assert not harness.agent.tracks(harness.source.model_copy(update={"user_id": "U2"}))
+    assert harness.agent.tracks(harness.source.model_copy(update={"user_id": "U2"}))
     assert not harness.agent.tracks(harness.source.model_copy(update={"thread_ts": "9000.000001"}))
     post("!stop", "1002.000001")
     post("<@BOT>", "1001.000001")
@@ -302,20 +372,14 @@ def test_v5_migration_preserves_stop_and_existing_conversation(harness):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
-def test_bot_clarification_keeps_original_request_after_classified_short_answer(harness):
+def test_bot_clarification_keeps_original_request_for_short_answer(harness):
     harness.planner.steps = [Plan(action=Clarify(question="明日の19時でいい？"))]
     harness.submit("ミーティングの時間を相談したい")
     harness.agent.run_once()
-    previous = harness.jobs.context(harness.source)
     harness.planner.requests.clear()
-    harness.planner.response_steps = [False, True]
-    post = listener(harness)
-    post("人同士の雑談", "1001.000001")
-    harness.agent.run_once()
-    assert harness.jobs.context(harness.source) == previous
     harness.planner.steps = [Plan(action=Reply(text="じゃあ明日19時だね"))]
-    post("OK", "1002.000001")
-    harness.agent.run_once()
+    listener(harness)("OK", "1002.000001")
+    assert harness.agent.run_once()
     pending = json.loads(harness.planner.requests[-1].context)["pending_clarification"]
     assert pending["requests"] == ["ミーティングの時間を相談したい"]
     assert pending["question"] == "明日の19時でいい？"

@@ -61,7 +61,8 @@ def test_positive_reaction_approves_exact_delivered_proposal_once(harness, name)
     assert harness.agent.receive_reaction(reaction(harness, name))
     assert not harness.agent.receive_reaction(reaction(harness, name))
     harness.agent.run_once()
-    assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    completed = harness.jobs.get(job_id)
+    assert completed is not None and completed.status == JobStatus.SUCCEEDED
     assert harness.calendar.writes == 1
     assert not harness.agent.run_once()
 
@@ -90,14 +91,15 @@ def test_positive_reaction_approves_exact_delivered_proposal_once(harness, name)
         "👍 お願いします",
     ],
 )
-def test_short_reply_approves_only_pending_delivered_proposal_without_ai(harness, text):
+def test_short_reply_approves_only_pending_delivered_proposal(harness, text):
     job_id = waiting(harness)
-    assert (
-        harness.agent.receive(IncomingMessage(event_id="answer", source=harness.source, text=text))
-        is None
+    harness.planner.approval_steps = [True]
+    assert harness.agent.receive(
+        IncomingMessage(event_id="answer", source=harness.source, text=text)
     )
     # 同じ返信を再受信しても新規ジョブを作らない。
     harness.agent.receive(IncomingMessage(event_id="answer", source=harness.source, text=text))
+    harness.agent.run_once()
     harness.agent.run_once()
     assert harness.calendar.writes == 1
     assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
@@ -180,7 +182,9 @@ def test_undelivered_or_expired_proposal_cannot_be_approved(harness, kind):
     if kind == "reaction":
         assert not harness.agent.receive_reaction(reaction(harness))
     else:
+        harness.planner.approval_steps = [True]
         harness.agent.receive(IncomingMessage(event_id="answer", source=harness.source, text="OK"))
+        harness.agent.run_once()
     assert harness.jobs.get(job_id).status == JobStatus.AWAITING_APPROVAL
     notice_id, source, text = harness.jobs.pending_notifications()[0]
     client = Mock()
@@ -271,3 +275,46 @@ def test_ambiguous_pending_targets_need_explicit_job_id(harness):
         == harness.jobs.get(second).status
         == JobStatus.AWAITING_APPROVAL
     )
+
+
+def test_expired_pending_proposal_does_not_block_an_active_one(harness):
+    active = waiting(harness)
+    expired = harness.submit("古い操作", "expired")
+    job = harness.jobs.get(expired)
+    harness.jobs.save(
+        job.model_copy(
+            update={
+                "status": JobStatus.AWAITING_APPROVAL,
+                "plan_json": harness.jobs.get(active).plan_json,
+                "approval_expires_at": time.time() - 1,
+            }
+        )
+    )
+    assert harness.jobs.approve_pending(harness.source, time.time())
+    assert harness.jobs.get(active).status == JobStatus.QUEUED
+    assert harness.jobs.get(expired).status == JobStatus.AWAITING_APPROVAL
+
+
+def test_pending_proposal_and_delivery_survive_purge_and_restart(harness):
+    job_id = waiting(harness)
+    harness.jobs.purge(time.time() + 60 * 86400)
+    harness.jobs = SQLiteJobRepository(harness.jobs.path)
+    harness.configure()
+    assert harness.jobs.recover() == 0
+    assert harness.agent.receive_reaction(reaction(harness))
+    harness.agent.run_once()
+    completed = harness.jobs.get(job_id)
+    assert completed is not None and completed.status == JobStatus.SUCCEEDED
+    assert harness.calendar.writes == 1
+
+
+@pytest.mark.parametrize("already_expired", [False, True])
+def test_restart_migrates_only_unexpired_legacy_approval(harness, already_expired):
+    job_id = waiting(harness)
+    job = harness.jobs.get(job_id)
+    deadline = time.time() + (-60 if already_expired else 600)
+    harness.jobs.save(job.model_copy(update={"approval_expires_at": deadline}))
+    restarted = SQLiteJobRepository(harness.jobs.path)
+    migrated = restarted.get(job_id)
+    assert migrated is not None
+    assert migrated.approval_expires_at == (deadline if already_expired else None)

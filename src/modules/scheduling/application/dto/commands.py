@@ -73,4 +73,6 @@ class UpdateEvent(ValueObject):
             raise ValueError("既存の予定のゲストは変更できません")
         if self.draft.label is not None:
             raise ValueError("既存の予定のラベルは保持してください")
+        if self.draft.create_google_meet:
+            raise ValueError("既存の予定の会議情報は変更できません")
         return self

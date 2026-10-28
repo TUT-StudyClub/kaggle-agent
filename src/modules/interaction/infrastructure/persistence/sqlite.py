@@ -90,6 +90,14 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                     CREATE TABLE IF NOT EXISTS conversation_tracking (key TEXT PRIMARY KEY);
                     PRAGMA user_version=6;
                 """)
+            # 旧版で作成された未期限切れの承認待ちも期限なしへ移行する。
+            # すでに期限切れの案は復活させない。
+            db.execute(
+                "UPDATE jobs SET payload=json_set(payload,'$.approval_expires_at',NULL) "
+                "WHERE status='awaiting_approval' "
+                "AND json_extract(payload,'$.approval_expires_at') >= ?",
+                (time.time(),),
+            )
         self.path.chmod(0o600)
 
     @contextmanager
@@ -138,9 +146,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                 SELECT payload FROM jobs j WHERE status='queued'
                 AND NOT EXISTS (
                     SELECT 1 FROM jobs other WHERE other.conversation_key=j.conversation_key
-                    AND (other.status='running' OR (other.status='awaiting_approval'
-                        AND COALESCE(json_extract(j.payload,'$.message.addressing'),'direct')
-                            != 'followup'))
+                    AND other.status='running'
                 ) ORDER BY CASE WHEN json_extract(payload,'$.plan_json') IS NOT NULL
                     THEN 0 ELSE 1 END, updated_at LIMIT 1
             """).fetchone()
@@ -184,12 +190,14 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             self._save(db, approved)
         return True
 
-    def approve_pending(self, source: Source, now: float) -> bool:
+    def approve_pending(self, source: Source, now: float, message_ts: str | None = None) -> bool:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = db.execute(
-                "SELECT payload FROM jobs WHERE conversation_key=? AND status='awaiting_approval'",
-                (source.conversation_key,),
+                "SELECT payload FROM jobs WHERE conversation_key=? AND status='awaiting_approval' "
+                "AND (json_extract(payload,'$.approval_expires_at') IS NULL "
+                "OR json_extract(payload,'$.approval_expires_at') >= ?)",
+                (source.conversation_key, now),
             ).fetchall()
             if len(rows) != 1:
                 return False
@@ -203,11 +211,22 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             delivery = ReplyDelivery.model_validate_json(row[0])
             if delivery.state != "done" or delivery.source != source or not delivery.message_ts:
                 return False
+            if message_ts is not None and Decimal(message_ts) <= Decimal(delivery.message_ts):
+                return False
             approved = job.approve(source, now)
             if approved is None:
                 return False
             self._save(db, approved)
         return True
+
+    def pending_approval_count(self, source: Source, now: float) -> int:
+        with self.connection() as db:
+            return db.execute(
+                "SELECT count(*) FROM jobs WHERE conversation_key=? AND status='awaiting_approval' "
+                "AND (json_extract(payload,'$.approval_expires_at') IS NULL "
+                "OR json_extract(payload,'$.approval_expires_at') >= ?)",
+                (source.conversation_key, now),
+            ).fetchone()[0]
 
     def approve_reaction(self, reaction: ApprovalReaction, now: float) -> bool:
         with self.connection() as db:
@@ -313,7 +332,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             ).fetchall():
                 job = Job.model_validate_json(payload)
                 if job.status == JobStatus.AWAITING_APPROVAL:
-                    if (job.approval_expires_at or 0) >= time.time():
+                    if job.approval_expires_at is None or job.approval_expires_at >= time.time():
                         continue
                     job = job.transition(JobStatus.FAILED, error_code="approval_expired")
                 elif job.write_started:
@@ -338,12 +357,14 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
     def tracks(self, source: Source) -> bool:
         if self.tracking_stopped(source):
             return False
+        prefix = source.thread_key + "/"
         with self.connection() as db:
             return (
                 db.execute(
-                    "SELECT 1 FROM conversation_tracking WHERE key=? "
-                    "UNION ALL SELECT 1 FROM jobs WHERE conversation_key=? LIMIT 1",
-                    (source.conversation_key, source.conversation_key),
+                    "SELECT 1 FROM thread_tracking WHERE key=? AND stopped=0 "
+                    "UNION ALL SELECT 1 FROM conversation_tracking WHERE substr(key,1,?)=? "
+                    "UNION ALL SELECT 1 FROM jobs WHERE substr(conversation_key,1,?)=? LIMIT 1",
+                    (source.thread_key, len(prefix), prefix, len(prefix), prefix),
                 ).fetchone()
                 is not None
             )
@@ -470,11 +491,23 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
 
     def purge(self, before: float) -> int:
         with self.connection() as db:
-            count = db.execute("DELETE FROM jobs WHERE updated_at<?", (before,)).rowcount
+            count = db.execute(
+                "DELETE FROM jobs WHERE updated_at<? AND status!='awaiting_approval'", (before,)
+            ).rowcount
             db.execute("DELETE FROM conversations WHERE updated_at<?", (before,))
             db.execute("DELETE FROM audit_logs WHERE created_at<?", (before,))
-            db.execute("DELETE FROM notifications WHERE created_at<?", (before,))
-            db.execute("DELETE FROM reply_deliveries WHERE updated_at<?", (before,))
+            db.execute(
+                "DELETE FROM notifications WHERE created_at<? AND NOT EXISTS "
+                "(SELECT 1 FROM jobs WHERE status='awaiting_approval' "
+                "AND notifications.id=jobs.id || '/awaiting_approval')",
+                (before,),
+            )
+            db.execute(
+                "DELETE FROM reply_deliveries WHERE updated_at<? AND NOT EXISTS "
+                "(SELECT 1 FROM jobs WHERE status='awaiting_approval' "
+                "AND reply_deliveries.id=jobs.id || '/awaiting_approval')",
+                (before,),
+            )
             db.execute("DELETE FROM schedule_reminders WHERE updated_at<?", (before,))
             db.execute("DELETE FROM meeting_receipts WHERE updated_at<?", (before,))
         return count

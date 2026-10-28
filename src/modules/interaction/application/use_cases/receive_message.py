@@ -39,7 +39,7 @@ class ReceiveMessageUseCase:
         if message.addressing == "followup":
             if not self.jobs.accepts_followup(message):
                 return None
-            # 人同士の「OK」を承認にしない。ワーカーで応答先を判定してから扱う。
+            # 承認待ちの場合はワーカーで発言者と承認意思を確認する。
             job = self.jobs.enqueue(message)
             return job.id if job else None
         approval = re.fullmatch(r"承認\s+([a-f0-9]{32})", message.text.strip())
@@ -49,6 +49,9 @@ class ReceiveMessageUseCase:
                     source, "承認できません。対象・利用者・スレッド・有効期限を確認してください。"
                 )
             return None
+        if self.jobs.pending_approval_count(source, self.clock.timestamp()):
+            job = self.jobs.enqueue(message)
+            return job.id if job else None
         if is_approval_reply(message.text):
             if self.jobs.approve_pending(source, self.clock.timestamp()):
                 return None

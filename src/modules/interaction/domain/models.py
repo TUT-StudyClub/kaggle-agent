@@ -96,8 +96,7 @@ class Job(ValueObject):
         if (
             self.status != JobStatus.AWAITING_APPROVAL
             or self.message.source != source
-            or self.approval_expires_at is None
-            or self.approval_expires_at < now
+            or (self.approval_expires_at is not None and self.approval_expires_at < now)
         ):
             return None
         return self.transition(JobStatus.QUEUED)

@@ -14,9 +14,9 @@ description: Google Calendarの予定・空き時間を調べ、予定の作成�
    重複統合・空き時間計算・
    回答文の生成まで行う。AIが予定一覧から判定したり、計算結果の日時を文章に書き直したりしない。
 3. 作成・変更の依頼では、取得結果と会話から必要な入力を確認する。
-   入力が揃ったら、作成は`calendar.create`、変更は`calendar.update`の操作案を返す。
+   入力が揃ったら、作成は`meeting.create`、変更は`calendar.update`の操作案を返す。
    招待する人はMember DBのSlackユーザーIDとCalendar Emailsで確認する。
-   予定作成後のSlack周知も頼まれたら、`slack.channels`で周知先を確認して
+   `slack.channels`で`10_competition_general`または相当する周知先を確認して、
    `meeting.create`の1操作に予定・招待先・周知文をまとめる。承認はPythonが1回だけ求める。
 4. 予定だけの質問なら読み取った結果を回答する。予定を手掛かりに公開情報も調べる依頼なら、
    必要な施設名などを使って調査を続け、元の質問に答える。

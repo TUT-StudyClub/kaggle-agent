@@ -10,10 +10,17 @@ from modules.scheduling.public import CreateEvent, SchedulingService
 from shared.errors import AgentError, UncertainWrite
 
 
-def announcement_text(announcement: MeetingAnnouncement) -> str:
+def announcement_text(
+    announcement: MeetingAnnouncement, guest_user_ids: list[str] | None = None
+) -> str:
     # 本文内のSlack制御構文を無効化し、承認対象のフラグだけを全体メンションへ変換する。
     text = html.escape(announcement.text, quote=False)
-    return ("<!channel>\n" if announcement.mention_channel else "") + text
+    mentions = (
+        "<!channel>"
+        if announcement.mention_channel
+        else " ".join(f"<@{user}>" for user in (guest_user_ids or []))
+    )
+    return (mentions + "\n" if mentions else "") + text
 
 
 class MeetingService:
@@ -85,7 +92,9 @@ class MeetingService:
         self.receipts.save_meeting(receipt)
         try:
             ts = self.sender.send(
-                action.announcement.channel_id, announcement_text(action.announcement), key
+                action.announcement.channel_id,
+                announcement_text(action.announcement, action.event.guest_user_ids),
+                key,
             )
         except Exception:
             raise AgentError(
@@ -107,7 +116,9 @@ class MeetingService:
         if event_result is None:
             return None
         ts = self.sender.find(
-            action.announcement.channel_id, announcement_text(action.announcement), key
+            action.announcement.channel_id,
+            announcement_text(action.announcement, action.event.guest_user_ids),
+            key,
         )
         if ts is None:
             return None
@@ -142,14 +153,21 @@ def meeting_preview(action: CreateMeeting) -> str:
         )
         or "なし"
     )
+    mentions = (
+        "@channel"
+        if action.announcement.mention_channel
+        else ", ".join(html.escape(name, quote=False) for name in event.guest_names) or "なし"
+    )
     return (
         f"予定作成・招待メール送信・Slack周知をまとめて承認する？\n\n"
         f"タイトル: {html.escape(event.draft.title, quote=False)}\n"
         f"日時: {start:%Y/%m/%d %H:%M}〜{end:%Y/%m/%d %H:%M}（日本時間）\n"
         f"カレンダー: {html.escape(event.calendar_alias, quote=False)}\n"
         f"イベントラベル: {label_text}\n招待先:\n{guests}\n"
+        f"Google Meet: {'作成する' if event.draft.create_google_meet else '指定なし'}\n"
         f"周知先: #{action.announcement.channel_name} ({action.announcement.channel_id})\n"
         f"@channel: {'使用する' if action.announcement.mention_channel else '使用しない'}\n"
+        f"メンション: {mentions}\n"
         # プレビューではメンションを発火させず、送信する文章を表示する。
         f"周知文:\n```\n{('@channel' + chr(10)) if action.announcement.mention_channel else ''}"
         f"{html.escape(action.announcement.text.replace('`', '｀'), quote=False)}\n```\n"

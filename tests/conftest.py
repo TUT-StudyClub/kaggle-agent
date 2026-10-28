@@ -17,6 +17,7 @@ from modules.knowledge.domain.models import Note, Page
 from modules.knowledge.public import KnowledgeRepository
 from modules.planning.infrastructure.skills import load_skillbook
 from modules.planning.public import (
+    ApprovalDecision,
     Plan,
     Planner,
     PlanningRequest,
@@ -38,6 +39,15 @@ class ScriptedPlanner(Planner):
         self.requests: list[PlanningRequest] = []
         self.response_requests: list[ResponseRequest] = []
         self.response_steps: list[bool | AgentError] = []
+        self.approval_steps: list[bool | AgentError] = []
+        self.approval_requests = []
+
+    def check_approval(self, request):
+        self.approval_requests.append(request)
+        step = self.approval_steps.pop(0) if self.approval_steps else False
+        if isinstance(step, AgentError):
+            raise step
+        return ApprovalDecision(approves=step)
 
     def check_response(self, request: ResponseRequest) -> ResponseDecision:
         self.response_requests.append(request)

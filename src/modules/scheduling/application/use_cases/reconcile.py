@@ -21,6 +21,7 @@ class ReconcileScheduleUseCase:
                 event.title != action.draft.title
                 or event.busy_period() != action.draft.period
                 or (action.draft.label is not None and event.label != action.draft.label)
+                or (action.draft.create_google_meet and not event.meet_url)
                 or (
                     action.draft.guest_emails
                     and (

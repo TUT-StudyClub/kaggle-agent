@@ -1,4 +1,5 @@
 import hashlib
+import time
 from datetime import datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -83,6 +84,10 @@ class GoogleCalendarRepository(CalendarRepository):
             labels = self._labels(alias)
         creator = raw.get("creator", {}).get("email") or None
         guests = [a for a in raw.get("attendees", []) if not a.get("resource", False)]
+        conference = raw.get("conferenceData", {})
+        is_meet = (
+            conference.get("conferenceSolution", {}).get("key", {}).get("type") == "hangoutsMeet"
+        )
         return Event(
             id=raw["id"],
             calendar_alias=alias,
@@ -107,6 +112,14 @@ class GoogleCalendarRepository(CalendarRepository):
                 and all(a.get("email") for a in guests)
             ),
             blocks_time=raw.get("transparency") != "transparent",
+            meet_url=next(
+                (
+                    point.get("uri", "")
+                    for point in conference.get("entryPoints", [])
+                    if point.get("entryPointType") == "video" and is_meet
+                ),
+                "",
+            ),
             editable=(
                 raw.get("organizer", {}).get("self", False)
                 and not raw.get("locked", False)
@@ -215,16 +228,31 @@ class GoogleCalendarRepository(CalendarRepository):
             body["eventLabelId"] = draft.label.id
         if draft.guest_emails:
             body["attendees"] = [{"email": email} for email in draft.guest_emails]
+        if draft.create_google_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": event_id,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+        params = {
+            "sendUpdates": "all" if draft.guest_emails else "none",
+            "eventLabelVersion": 1,
+        }
+        if draft.create_google_meet:
+            params["conferenceDataVersion"] = 1
         self.http.request(
             "POST",
             self._path(alias),
             json=body,
-            params={
-                "sendUpdates": "all" if draft.guest_emails else "none",
-                "eventLabelVersion": 1,
-            },
+            params=params,
         )
         result = self.event(alias, event_id)
+        for _ in range(4):
+            if not draft.create_google_meet or result.meet_url:
+                break
+            time.sleep(0.5)
+            result = self.event(alias, event_id)
         self._verify(result, draft)
         return result
 
@@ -234,6 +262,7 @@ class GoogleCalendarRepository(CalendarRepository):
             or datetime.fromisoformat(result.start) != draft.period.start
             or datetime.fromisoformat(result.end) != draft.period.end
             or (draft.label is not None and result.label != draft.label)
+            or (draft.create_google_meet and not result.meet_url)
             or (
                 draft.guest_emails
                 and (

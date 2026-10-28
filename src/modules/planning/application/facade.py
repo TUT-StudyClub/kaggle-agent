@@ -1,4 +1,5 @@
 from ..domain.skills import SkillBook
+from .dto.approval import ApprovalDecision, ApprovalRequest
 from .dto.planning import Plan, PlanningRequest
 from .dto.response import ResponseDecision, ResponseRequest
 from .ports.planner import Planner
@@ -26,6 +27,9 @@ class PlanningService(Planner):
 
     def check_response(self, request: ResponseRequest) -> ResponseDecision:
         return self._planner.check_response(request)
+
+    def check_approval(self, request: ApprovalRequest) -> ApprovalDecision:
+        return self._planner.check_approval(request)
 
     def probe(self) -> float:
         return self._probe.execute()
