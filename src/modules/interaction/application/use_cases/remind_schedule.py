@@ -2,7 +2,6 @@ import hashlib
 import logging
 from datetime import datetime, timedelta
 from html import escape
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from modules.interaction.application.dto.reminders import DailyScheduleReminder
@@ -36,12 +35,7 @@ def reminder_text(
             "終日" if len(event.start) == 10 else f"{boundary(event.start)}〜{boundary(event.end)}"
         )
         title = escape(" ".join(event.title.split()), quote=False)
-        link = urlsplit(event.url)
-        if link.scheme == "https" and link.hostname in {"www.google.com", "calendar.google.com"}:
-            url = escape(event.url, quote=False).replace("|", "%7C")
-            lines.append(f"• {when} {title} <{url}|予定を開く>")
-        else:
-            lines.append(f"• {when} {title}")
+        lines.append(f"• {when} {title}")
         users = participants[event.id] & channel_members
         mentions = (
             "<!channel>"

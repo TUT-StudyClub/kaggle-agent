@@ -156,7 +156,8 @@ def test_daily_notification_uses_jst_exact_label_and_persists_after_restart(remi
     assert "10/22 23:00〜11:00 前夜から" in sent["text"]
     assert sent["text"].index("終日イベント") < sent["text"].index("キックオフ")
     assert all(title not in sent["text"] for title in ["個人予定", "色だけ", "削除済み"])
-    assert "<https://calendar.google.com/event/test|予定を開く>" in sent["text"]
+    assert "予定を開く" not in sent["text"]
+    assert "https://calendar.google.com/event/test" not in sent["text"]
     params = requests[0].url.params
     assert params["timeMin"] == "2026-10-23T00:00:00+09:00"
     assert params["timeMax"] == "2026-10-24T00:00:00+09:00"
