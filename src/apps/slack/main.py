@@ -1,15 +1,45 @@
 import fcntl
 import signal
 import threading
+import time
 from contextlib import ExitStack
 
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_sdk.socket_mode.builtin import SocketModeClient
 
 from apps.worker.main import run_worker
 from apps.worker.reminders import run_reminders
 from composition import build, build_clock
 from config import Settings
 from shared.errors import AgentError
+
+
+class SocketHealth:
+    """Detect a disconnected or unresponsive SDK connection, including a stuck reconnect."""
+
+    def __init__(self, timeout: float = 120) -> None:
+        self.timeout = timeout
+        self.session = None
+        self.session_since = time.monotonic()
+        self.disconnected_since: float | None = None
+
+    def failed(self, client: SocketModeClient) -> bool:
+        now = time.monotonic()
+        session = client.current_session
+        if session is not self.session:
+            self.session = session
+            self.session_since = now
+        if not client.is_connected():
+            if self.disconnected_since is None:
+                self.disconnected_since = now
+            return now - self.disconnected_since >= self.timeout
+        self.disconnected_since = None
+        if session is None:
+            return False
+        last_pong = session.last_ping_pong_time
+        if last_pong is None:
+            return now - self.session_since >= self.timeout
+        return time.time() - last_pong >= self.timeout
 
 
 def run(settings: Settings) -> None:
@@ -73,7 +103,10 @@ def run(settings: Settings) -> None:
                     f" → {reminder.channel_id}",
                     flush=True,
                 )
-            stop.wait()
+            health = SocketHealth()
+            while not stop.wait(15):
+                if health.failed(handler.client):
+                    raise AgentError("socket_unhealthy", "Slack接続が復旧しないため再起動します。")
         finally:
             stop.set()
             handler.close()
