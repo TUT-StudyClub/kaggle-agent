@@ -235,10 +235,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                 "SELECT payload FROM reply_deliveries WHERE "
                 "json_extract(payload,'$.source.team_id')=? AND "
                 "json_extract(payload,'$.source.channel_id')=? AND "
-                "json_extract(payload,'$.source.user_id')=? AND "
                 "json_extract(payload,'$.message_ts')=? AND "
                 "json_extract(payload,'$.state')='done' AND id LIKE '%/awaiting_approval'",
-                (reaction.team_id, reaction.channel_id, reaction.user_id, reaction.message_ts),
+                (reaction.team_id, reaction.channel_id, reaction.message_ts),
             ).fetchall()
             if len(rows) != 1:
                 return False
@@ -249,7 +248,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             if row is None:
                 return False
             job = Job.model_validate_json(row[0])
-            approved = job.approve(delivery.source, now)
+            approved = job.approve(
+                delivery.source.model_copy(update={"user_id": reaction.user_id}), now
+            )
             if approved is None:
                 return False
             self._save(db, approved)

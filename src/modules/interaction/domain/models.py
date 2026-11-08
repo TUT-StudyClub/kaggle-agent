@@ -82,6 +82,7 @@ class Job(ValueObject):
     status: JobStatus = JobStatus.QUEUED
     plan_json: str | None = None
     approval_expires_at: float | None = None
+    approval_user_id: str | None = None
     error_code: str | None = None
     result_json: str | None = None
     write_started: bool = False
@@ -95,7 +96,10 @@ class Job(ValueObject):
     def approve(self, source: Source, now: float) -> Job | None:
         if (
             self.status != JobStatus.AWAITING_APPROVAL
-            or self.message.source != source
+            or self.message.source.model_copy(
+                update={"user_id": self.approval_user_id or self.message.source.user_id}
+            )
+            != source
             or (self.approval_expires_at is not None and self.approval_expires_at < now)
         ):
             return None

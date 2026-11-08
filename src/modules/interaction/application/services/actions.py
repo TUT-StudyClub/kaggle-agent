@@ -17,6 +17,7 @@ from modules.planning.public import (
     WRITE_KINDS,
     CreateMeeting,
     Plan,
+    UpdateInstructions,
 )
 from modules.scheduling.public import (
     CreateEvent,
@@ -105,6 +106,15 @@ class ActionService:
         return Plan(action=action)
 
     def _authorize(self, job: Job, plan: Plan) -> None:
+        if isinstance(plan.action, UpdateInstructions):
+            owner = self.settings.kaggle_owner_user_id
+            if owner is None or (
+                job.message.source.channel_id.startswith("D")
+                and job.message.source.user_id != owner
+            ):
+                raise AgentError(
+                    "instruction_approval_unavailable", "管理者が確認できるチャンネルで依頼してね。"
+                )
         if isinstance(plan.action, WriteKaggle) and (
             self.settings.kaggle_owner_user_id is None
             or job.message.source.user_id != self.settings.kaggle_owner_user_id

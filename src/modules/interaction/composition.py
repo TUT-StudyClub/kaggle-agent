@@ -35,6 +35,7 @@ from .application.use_cases.remind_schedule import RemindScheduleUseCase
 from .application.use_cases.remind_tasks import RemindTasksUseCase
 from .domain.meetings import MeetingRepository
 from .domain.repositories import JobRepository
+from .infrastructure.instruction_tool import InstructionTool
 from .infrastructure.messaging.slack import SlackMessenger
 from .infrastructure.messaging.slack_announcements import SlackAnnouncementSender
 from .infrastructure.messaging.slack_reminders import SlackReminderSender
@@ -66,6 +67,7 @@ def build_agent(
             SchedulingTool(scheduling),
             MeetingTool(meetings),
             KaggleTool(kaggle),
+            InstructionTool(Path(__file__).resolve().parents[3]),
         ),
         skillbook,
     )

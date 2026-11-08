@@ -25,6 +25,7 @@ from modules.planning.public import (
     Planner,
     PlanningRequest,
     Reply,
+    UpdateInstructions,
 )
 from modules.scheduling.public import (
     FindFree,
@@ -247,6 +248,11 @@ class ProcessJobUseCase:
                         JobStatus.AWAITING_APPROVAL,
                         plan_json=plan.model_dump_json(),
                         approval_expires_at=None,
+                        approval_user_id=(
+                            self.settings.kaggle_owner_user_id
+                            if isinstance(plan.action, UpdateInstructions)
+                            else None
+                        ),
                     )
                     preview = json.dumps(
                         plan.action.model_dump(mode="json"), ensure_ascii=False, indent=2
@@ -256,6 +262,11 @@ class ProcessJobUseCase:
                         if isinstance(plan.action, CreateMeeting)
                         else f"以下の操作を承認しますか？\n\n```json\n{preview}\n```"
                     )
+                    if isinstance(plan.action, UpdateInstructions):
+                        description = (
+                            f"<@{self.settings.kaggle_owner_user_id}> 変更案の承認をお願いします。"
+                            "承認する場合はこのメッセージに 👍 を付けてね。\n\n" + description
+                        )
                     self.jobs.notify(
                         job,
                         description,

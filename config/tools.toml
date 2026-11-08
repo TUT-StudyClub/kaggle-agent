@@ -7,6 +7,11 @@
 # Notion・Calendarの操作は引き続きPythonツールで実行する。
 web_search = "live"
 
+[tools.instructions]
+enabled = true
+skill = "instruction-management"
+actions = ["instructions.read", "instructions.update"]
+
 [tools.knowledge]
 enabled = true
 skill = "knowledge"

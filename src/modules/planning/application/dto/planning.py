@@ -48,6 +48,17 @@ class Clarify(ValueObject):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class ReadInstructions(ValueObject):
+    kind: Literal["instructions.read"] = "instructions.read"
+
+
+class UpdateInstructions(ValueObject):
+    kind: Literal["instructions.update"] = "instructions.update"
+    path: str = Field(min_length=1, max_length=150)
+    previous_sha256: str = Field(pattern=r"^(?:[0-9a-f]{64}|missing)$")
+    content: str = Field(min_length=1, max_length=20000)
+
+
 type Action = Annotated[
     Reply
     | Clarify
@@ -65,7 +76,9 @@ type Action = Annotated[
     | CreateMeeting
     | KaggleHelp
     | ReadKaggle
-    | WriteKaggle,
+    | WriteKaggle
+    | ReadInstructions
+    | UpdateInstructions,
     Field(discriminator="kind"),
 ]
 
@@ -83,6 +96,7 @@ WRITE_KINDS = frozenset(
         "calendar.update",
         "meeting.create",
         "kaggle.write",
+        "instructions.update",
     }
 )
 
