@@ -107,6 +107,7 @@ class CodexCLIPlanner(Planner):
         self.executable = executable or shutil.which("codex") or "codex"
         self.timeout_seconds = timeout_seconds
         self.stopped = False
+        self.reload_skillbook = False
         # 評価・診断用。直近の公開Web操作のメタデータをメモリ内だけに保持する。
         self.last_web_searches: list[dict] = []
 
@@ -177,6 +178,13 @@ class CodexCLIPlanner(Planner):
         return args
 
     def plan(self, request: PlanningRequest) -> Plan:
+        # 承認済みの手順変更を次の依頼から反映する。
+        from .skills import load_skillbook
+
+        if self.reload_skillbook:
+            book = load_skillbook()
+            self.instructions = INSTRUCTIONS + "\n" + book.prompt()
+            self.response_instructions = book.response_rules
         return self._run(request, Plan, instructions=self.instructions, web_search=self.web_search)
 
     def check_response(self, request: ResponseRequest) -> ResponseDecision:

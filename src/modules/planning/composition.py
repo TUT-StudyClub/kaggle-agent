@@ -11,6 +11,7 @@ def build_planning(timeout_seconds: int = 120, *, clock: Clock | None = None) ->
     clock = clock or SystemClock()
     book = load_skillbook()
     planner = CodexCLIPlanner(book, timeout_seconds)
+    planner.reload_skillbook = True
     planner.check_auth()
     return PlanningService(
         planner, book, ProbePlanningUseCase(planner, clock), planner.MODEL, planner.REASONING_EFFORT

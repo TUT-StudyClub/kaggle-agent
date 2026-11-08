@@ -45,10 +45,20 @@ def load_skillbook(
     with policy_path.open("rb") as stream:
         policy = ToolPolicy.model_validate(tomllib.load(stream))
     enabled_skills = {tool.skill for tool in policy.tools.values() if tool.enabled}
+    # ツールを持たない独立スキルも読み込む。
+    configured_skills = {tool.skill for tool in policy.tools.values()}
+    enabled_skills |= {
+        path.parent.name
+        for path in skills_root.glob("*/SKILL.md")
+        if path.parent.name not in configured_skills
+    }
     skills = tuple(
         read_skill(
             skills_root / name / "SKILL.md",
-            rules=(rules_root / f"{name}.md").read_text(encoding="utf-8").strip(),
+            rules=(rules_root / f"{name}.md").read_text(encoding="utf-8").strip()
+            if (rules_root / f"{name}.md").exists()
+            or name in {tool.skill for tool in policy.tools.values() if tool.enabled}
+            else "共通ルールに従います。",
         )
         for name in sorted(enabled_skills)
     )
