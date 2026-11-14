@@ -8,12 +8,14 @@ from modules.planning.public import Planner, SkillBook
 from modules.scheduling.public import SchedulingService
 from shared.application.ports.clock import Clock
 from shared.infrastructure.clock import SystemClock
+from shared.infrastructure.http import JsonHttp
 
 from .application.dto.reminders import DailyScheduleReminder, DailyTaskReminder
 from .application.facade import InteractionFacade
 from .application.policies.access import AgentPolicy
 from .application.ports.announcements import AnnouncementSender
 from .application.ports.messenger import Messenger
+from .application.ports.retro_documents import RetroDocuments
 from .application.services.actions import ActionService
 from .application.services.activity import ActivityReporter
 from .application.services.completion import JobCompletion
@@ -39,7 +41,12 @@ from .infrastructure.instruction_tool import InstructionTool
 from .infrastructure.messaging.slack import SlackMessenger
 from .infrastructure.messaging.slack_announcements import SlackAnnouncementSender
 from .infrastructure.messaging.slack_reminders import SlackReminderSender
+from .infrastructure.notion_retro import NotionRetroDocuments
 from .infrastructure.persistence.sqlite import SQLiteJobRepository
+
+
+def build_retro_documents(http: JsonHttp, source_id: str, template_id: str) -> RetroDocuments:
+    return NotionRetroDocuments(http, source_id, template_id)
 
 
 def build_agent(
@@ -58,9 +65,10 @@ def build_agent(
     announcements: AnnouncementSender | None = None,
     meeting_receipts: MeetingRepository | None = None,
     task_reminders: RemindTasksUseCase | None = None,
+    retro_documents: RetroDocuments | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
-    meetings = MeetingService(scheduling, announcements, meeting_receipts)
+    meetings = MeetingService(scheduling, announcements, meeting_receipts, retro_documents)
     tools = tools or ToolRegistry(
         (
             KnowledgeTool(knowledge),
@@ -114,6 +122,7 @@ def build_interaction(
     kaggle: KaggleService | None = None,
     daily_task_reminder: DailyTaskReminder | None = None,
     task_board: TaskBoardService | None = None,
+    retro_documents: RetroDocuments | None = None,
 ) -> InteractionFacade:
     clock = clock or SystemClock()
     jobs = SQLiteJobRepository(database)
@@ -151,6 +160,7 @@ def build_interaction(
         clock=clock,
         reminders=reminders,
         task_reminders=task_reminders,
+        retro_documents=retro_documents,
         announcements=SlackAnnouncementSender(client, policy.channel_ids, bot_user_id),
         meeting_receipts=jobs,
         kaggle=kaggle,

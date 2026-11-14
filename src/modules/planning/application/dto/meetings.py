@@ -21,3 +21,7 @@ class CreateMeeting(ValueObject):
     kind: Literal["meeting.create"] = "meeting.create"
     event: CreateEvent
     announcement: MeetingAnnouncement
+    retro_planning: bool = False
+    retro_user_ids: tuple[str, ...] = ()
+    retro_user_names: tuple[str, ...] = ()
+    retro_slack_user_ids: tuple[str, ...] = ()

@@ -16,6 +16,8 @@ class AgentPolicy(ValueObject):
     notion_pages: frozenset[str] = frozenset()
     notion_data_sources: frozenset[str] = frozenset()
     notion_competition_data_source_id: str | None = None
+    retro_data_source_id: str | None = None
+    retro_template_id: str | None = None
     notion_parents: dict[str, str] = {}
     calendars: dict[str, CalendarConfig] = {}
     retention_days: int = Field(default=7, ge=1, le=30)
@@ -32,6 +34,13 @@ class AgentPolicy(ValueObject):
 
     @model_validator(mode="after")
     def no_empty_ids(self) -> AgentPolicy:
+        if bool(self.retro_data_source_id) != bool(self.retro_template_id):
+            raise ValueError("レトプラ用のデータソースIDとテンプレートIDを両方設定してください")
+        if self.retro_data_source_id:
+            source = str(UUID(self.retro_data_source_id))
+            UUID(self.retro_template_id or "")
+            if source not in {str(UUID(value)) for value in self.allowed_notion_data_sources}:
+                raise ValueError("レトプラ用データソースをNOTION_DATA_SOURCESに登録してください")
         if any(not v for v in (*self.user_ids, *self.channel_ids)):
             raise ValueError("許可IDに空文字は使えません")
         if self.dm_user_ids is not None and not self.dm_user_ids <= self.user_ids:

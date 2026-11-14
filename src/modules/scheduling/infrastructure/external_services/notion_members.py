@@ -73,6 +73,10 @@ class NotionMemberDirectory(MemberDirectory):
                             label_id=property_text(props, "Calendar Label ID"),
                             url=row.get("url", ""),
                             calendar_emails=calendar_emails(props),
+                            notion_user_ids=tuple(
+                                p.get("id", "")
+                                for p in props.get("Notion User", {}).get("people", [])
+                            ),
                         )
                     )
                 except ValidationError as error:

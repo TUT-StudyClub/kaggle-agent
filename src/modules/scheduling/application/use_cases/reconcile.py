@@ -19,6 +19,10 @@ class ReconcileScheduleUseCase:
         if event is not None and isinstance(action, CreateEvent):
             if (
                 event.title != action.draft.title
+                or (
+                    action.draft.description is not None
+                    and event.description != action.draft.description
+                )
                 or event.busy_period() != action.draft.period
                 or (action.draft.label is not None and event.label != action.draft.label)
                 or (action.draft.create_google_meet and not event.meet_url)

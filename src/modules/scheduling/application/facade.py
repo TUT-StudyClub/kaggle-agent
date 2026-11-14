@@ -32,6 +32,19 @@ class SchedulingService:
     def participant_users(self, alias: str, events: list[Event]) -> dict[str, frozenset[str]]:
         return self._members.participant_users(alias, events)
 
+    def members(self, alias: str) -> list[dict]:
+        members = self._members.load(alias)
+        if not members:
+            from shared.errors import AgentError
+
+            raise AgentError(
+                "participant_directory_missing", "Member DBのメンバーを確認できません。"
+            )
+        return [
+            {"name": m.name, "slack_user_id": m.slack_user_id, "notion_user_ids": m.notion_user_ids}
+            for m in members
+        ]
+
     def execute(self, action: object, key: str) -> dict[str, object]:
         if isinstance(action, (ListCalendars, ListEvents, FindFree)):
             return self._read.execute(action, key)

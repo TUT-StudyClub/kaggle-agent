@@ -7,7 +7,7 @@ from slack_sdk import WebClient
 
 from apps.slack.handlers.events import register_listeners
 from config import Settings
-from modules.interaction.composition import build_interaction
+from modules.interaction.composition import build_interaction, build_retro_documents
 from modules.interaction.public import InteractionFacade
 from modules.kaggle.composition import build_kaggle
 from modules.knowledge.composition import build_knowledge, build_task_board
@@ -91,6 +91,15 @@ def build(settings: Settings, stack: ExitStack) -> tuple[App, InteractionFacade]
             else None
         ),
         bot_user_id=auth["user_id"],
+        retro_documents=(
+            build_retro_documents(
+                notion_http,
+                settings.retro_data_source_id,
+                settings.retro_template_id,
+            )
+            if settings.retro_data_source_id and settings.retro_template_id
+            else None
+        ),
         kaggle=kaggle,
     )
     app = App(client=slack_client, token_verification_enabled=False)
