@@ -49,10 +49,16 @@ tasks:
       - task: test
 
   lint:
-    desc: Ruffのlintと整形状態を検証
+    desc: PythonとMarkdownのlint・整形状態を検証
     cmds:
       - uv run --locked ruff check .
       - uv run --locked ruff format --check .
+      - task: lint:markdown
+
+  lint:markdown:
+    desc: Markdownの書式を検証
+    cmds:
+      - uv run --locked pymarkdown --strict-config scan --recurse --respect-gitignore .
 
   format:
     desc: Ruffで自動修正・整形

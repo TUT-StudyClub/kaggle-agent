@@ -17,7 +17,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.4,<10", "ruff>=0.14,<1", "ty>=0.0.1,<1", "import-linter>=2.5,<3"]
+dev = [
+    "pytest>=8.4,<10",
+    "ruff>=0.14,<1",
+    "ty>=0.0.1,<1",
+    "import-linter>=2.5,<3",
+    "pymarkdownlnt>=0.9,<1",
+]
 
 [project.scripts]
 kaggle-agent = "apps.cli.main:main"
@@ -45,6 +51,14 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pymarkdown]
+extensions.front-matter.enabled = true
+extensions.markdown-tables.enabled = true
+# 日本語の文章や URL を任意の文字数で改行しない。
+plugins.MD013.enabled = false
+# ルール文書は導入文から始まる。
+plugins.per-file-ignores."rules/*.md" = ["MD041"]
 
 [tool.ty.environment]
 python-version = "3.14"
