@@ -82,6 +82,8 @@ class ActionService:
         if isinstance(action, CreateMeeting):
             if not self.tools.skillbook.permits("calendar.create"):
                 raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
+            if action.retro_planning and not self.tools.skillbook.permits("notion.create"):
+                raise AgentError("forbidden_tool", "Notion作成がツール設定で許可されていません。")
             action = self.meetings.prepare(action)
         if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
             mapped = self.jobs.mapping(job.message.source.thread_key)

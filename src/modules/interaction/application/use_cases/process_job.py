@@ -149,6 +149,11 @@ class ProcessJobUseCase:
                     f"「{plan.action.event.draft.title}」を作成して、"
                     + ("招待メール送信を要求したよ。" if plan.action.event.guest_user_ids else "")
                     + f"#{plan.action.announcement.channel_name}への周知も完了したよ。"
+                    + (
+                        f"\nドキュメント: {result['document_url']}"
+                        if result.get("document_url")
+                        else ""
+                    )
                     if isinstance(plan.action, CreateMeeting)
                     else "実行しました。\n" + json.dumps(result, ensure_ascii=False, indent=2)
                 )

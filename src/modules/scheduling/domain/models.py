@@ -33,6 +33,7 @@ class CalendarMember(ValueObject):
     label_id: str = Field(min_length=1)
     url: str = ""
     calendar_emails: frozenset[str] = frozenset()
+    notion_user_ids: tuple[str, ...] = ()
 
     @field_validator("calendar_emails")
     @classmethod
@@ -62,6 +63,7 @@ class Event(ValueObject):
     etag: str
     editable: bool = False
     location: str = ""
+    description: str = ""
     label_id: str | None = None
     label: EventLabel | None = None
     color_id: str | None = None
@@ -91,6 +93,7 @@ class Event(ValueObject):
 class EventDraft(ValueObject):
     title: str = Field(min_length=1, max_length=200)
     period: TimeRange
+    description: str | None = Field(default=None, max_length=8000)
     guest_emails: tuple[str, ...] = ()
     label: EventLabel | None = None
     create_google_meet: bool = False

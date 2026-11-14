@@ -4,6 +4,7 @@ import time
 import pytest
 
 from modules.interaction.application.ports.announcements import AnnouncementSender
+from modules.interaction.application.ports.retro_documents import RetroDocuments
 from modules.interaction.application.services.meetings import MeetingService
 from modules.interaction.domain.models import IncomingMessage, JobStatus
 from modules.interaction.infrastructure.persistence.sqlite import SQLiteJobRepository
@@ -60,6 +61,22 @@ class Announcements(AnnouncementSender):
         return "2000.000001" if (channel_id, text, key) in self.sent else None
 
 
+class RetroDocs(RetroDocuments):
+    def __init__(self, ready=True):
+        self.is_ready = ready
+        self.created = []
+
+    def members(self, members):
+        return tuple(f"notion-{member['slack_user_id']}" for member in members)
+
+    def create(self, day, user_ids):
+        self.created.append((day.isoformat(), user_ids))
+        return "notion-page", "https://notion.test/retro"
+
+    def ready(self, page_id, day, user_ids):
+        return self.is_ready
+
+
 def action(**announcement_overrides):
     return CreateMeeting(
         event=CreateEvent(calendar_alias="personal", draft=draft(), guest_user_ids=["U2", "U3"]),
@@ -90,7 +107,7 @@ def prepare(harness):
     job_id = harness.submit("予定を作り中川と秋山を招待してgeneralに@channelで周知")
     assert harness.agent.run_once()
     job = harness.jobs.get(job_id)
-    assert job.status == JobStatus.AWAITING_APPROVAL
+    assert job.status == JobStatus.AWAITING_APPROVAL, job
     return job_id, Plan.model_validate_json(job.plan_json).action
 
 
@@ -131,6 +148,52 @@ def test_invited_members_are_mentioned_in_announcement(meeting):
     harness.approve(job_id)
     assert harness.agent.run_once()
     assert announcements.sent == [("C1", "<@U2> <@U3>\n10/23 18:30〜19:00 面談を行うよ。", job_id)]
+
+
+def test_retro_creates_document_then_adds_url_to_event_and_announcement(meeting, monkeypatch):
+    harness, members, announcements = meeting
+    members.rows.append(
+        CalendarMember(
+            name="山田", slack_user_id="U1", label_id="l1", calendar_emails={"y@example.com"}
+        )
+    )
+    calendars = harness.calendar.calendars()
+    calendars[0].labels.append(EventLabel(id="l1", name="山田"))
+    monkeypatch.setattr(harness.calendar, "calendars", lambda: calendars)
+    docs = RetroDocs()
+    harness.configure(member_directory=members, announcements=announcements, retro_documents=docs)
+    retro = action().model_copy(update={"retro_planning": True})
+    harness.planner.steps = [Plan(action=retro)] * 2
+    job_id, approved = prepare(harness)
+    assert approved.retro_user_names == ("中川", "秋山", "山田")
+    assert approved.event.guest_user_ids == ["U2", "U3", "U1"]
+    assert approved.event.draft.guest_emails == ("n@example.com", "a@example.com", "y@example.com")
+    assert docs.created == [] and not announcements.sent
+    assert "Notion" in harness.jobs.pending_notifications()[0][2]
+    harness.approve(job_id)
+    harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.SUCCEEDED
+    assert docs.created == [("2026-10-23", ("notion-U2", "notion-U3", "notion-U1"))]
+    assert "https://notion.test/retro" in harness.calendar.stored[job_id].description
+    assert (
+        "<https://notion.test/retro|[Retro &amp; Planning] 2026/10/23>" in announcements.sent[0][1]
+    )
+    assert "<@U2> <@U3> <@U1>" in announcements.sent[0][1]
+    assert harness.jobs.meeting(job_id).document_url == "https://notion.test/retro"
+
+
+def test_retro_incomplete_template_stops_before_event_or_announcement(meeting):
+    harness, members, announcements = meeting
+    docs = RetroDocs(ready=False)
+    harness.configure(member_directory=members, announcements=announcements, retro_documents=docs)
+    harness.planner.steps = [Plan(action=action().model_copy(update={"retro_planning": True}))] * 2
+    job_id, _ = prepare(harness)
+    harness.approve(job_id)
+    harness.agent.run_once()
+    assert harness.jobs.get(job_id).status == JobStatus.FAILED
+    assert len(docs.created) == 1
+    assert harness.calendar.writes == 0 and not announcements.sent
+    assert harness.jobs.meeting(job_id).document_url == "https://notion.test/retro"
 
 
 @pytest.mark.parametrize("emails", [frozenset(), frozenset({"n@example.com", "other@example.com"})])

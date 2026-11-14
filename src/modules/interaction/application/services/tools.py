@@ -177,6 +177,12 @@ class ToolRegistry:
             raise AgentError("forbidden_tool", "このPythonツールの操作は設定で許可されていません。")
         if isinstance(action, CreateMeeting) and not self.skillbook.permits("calendar.create"):
             raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
+        if (
+            isinstance(action, CreateMeeting)
+            and action.retro_planning
+            and not self.skillbook.permits("notion.create")
+        ):
+            raise AgentError("forbidden_tool", "Notion作成がツール設定で許可されていません。")
         return self.tools[action.kind].execute(action, source_url, key, source=source)
 
     def reconcile(self, action: Action, key: str) -> dict[str, Any] | None:

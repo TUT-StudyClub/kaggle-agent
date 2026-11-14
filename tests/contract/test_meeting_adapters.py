@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from slack_sdk.errors import SlackApiError, SlackClientError
 
 from modules.interaction.application.services.meetings import announcement_text
+from modules.interaction.infrastructure.messaging.formatting import message_payload
 from modules.interaction.infrastructure.messaging.slack_announcements import SlackAnnouncementSender
 from modules.planning.public import MeetingAnnouncement
 from modules.scheduling.domain.models import EventLabel
@@ -69,6 +70,30 @@ def test_google_missing_invitee_in_readback_is_uncertain():
         repository.create(
             "personal", draft().model_copy(update={"guest_emails": ("n@example.com",)}), "job"
         )
+
+
+@pytest.mark.parametrize("saved_description", ["https://example.com/document", "missing"])
+def test_google_creation_checks_description(saved_description):
+    stored = {}
+
+    def respond(request):
+        if request.method == "POST":
+            stored.update(json.loads(request.content))
+            assert stored["description"] == "https://example.com/document"
+            stored["description"] = saved_description
+        return httpx.Response(200, json=stored) if stored else httpx.Response(404)
+
+    with httpx.Client(
+        base_url="https://calendar.test/", transport=httpx.MockTransport(respond)
+    ) as client:
+        repository = GoogleCalendarRepository(JsonHttp(client), {"personal": "calendar"})
+        event_draft = draft().model_copy(update={"description": "https://example.com/document"})
+        if saved_description == "missing":
+            with pytest.raises(UncertainWrite):
+                repository.create("personal", event_draft, "job")
+        else:
+            event = repository.create("personal", event_draft, "job")
+            assert event.description == saved_description
 
 
 @pytest.mark.parametrize("returned_label", ["kaggle", "unnamed"])
@@ -158,6 +183,18 @@ def test_only_approved_flag_can_generate_channel_mention(mention):
     assert args["text"] == text and args["parse"] == "none" and not args["link_names"]
     assert "thread_ts" not in args  # 周知はチャンネルの新規投稿。
     assert args["metadata"]["event_type"] == "kaggle_agent_meeting"
+
+
+def test_retro_document_link_keeps_named_link_in_rich_text_list_payload():
+    text = "- お知らせ\n\n<https://notion.test/retro|[Retro &amp; Planning] 2026/10/23>"
+    payload = message_payload(text, slack_markup=True)
+    elements = payload["blocks"][0]["elements"]
+    sections = [element for element in elements if element["type"] == "rich_text_section"]
+    assert {
+        "type": "link",
+        "url": "https://notion.test/retro",
+        "text": "[Retro & Planning] 2026/10/23",
+    } in sections[0]["elements"]
 
 
 @pytest.mark.parametrize("error", [SlackClientError("offline"), OSError("offline")])

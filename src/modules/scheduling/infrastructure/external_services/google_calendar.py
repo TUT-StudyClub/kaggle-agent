@@ -93,6 +93,7 @@ class GoogleCalendarRepository(CalendarRepository):
             calendar_alias=alias,
             title=raw.get("summary", "(非公開)"),
             location=raw.get("location", ""),
+            description=raw.get("description", ""),
             start=date_text(raw.get("start", {})),
             end=date_text(raw.get("end", {})),
             url=raw.get("htmlLink", ""),
@@ -210,12 +211,15 @@ class GoogleCalendarRepository(CalendarRepository):
         return self._event(alias, raw)
 
     def _body(self, draft: EventDraft, key: str) -> dict:
-        return {
+        body = {
             "summary": draft.title,
             "start": {"dateTime": draft.period.start.isoformat(), "timeZone": "Asia/Tokyo"},
             "end": {"dateTime": draft.period.end.isoformat(), "timeZone": "Asia/Tokyo"},
             "extendedProperties": {"private": {"agentKey": key}},
         }
+        if draft.description is not None:
+            body["description"] = draft.description
+        return body
 
     def create(self, alias: str, draft: EventDraft, key: str) -> Event:
         event_id = self.event_key(key)
@@ -259,6 +263,7 @@ class GoogleCalendarRepository(CalendarRepository):
     def _verify(self, result: Event, draft: EventDraft) -> None:
         if (
             result.title != draft.title
+            or (draft.description is not None and result.description != draft.description)
             or datetime.fromisoformat(result.start) != draft.period.start
             or datetime.fromisoformat(result.end) != draft.period.end
             or (draft.label is not None and result.label != draft.label)

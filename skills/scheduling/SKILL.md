@@ -19,6 +19,9 @@ description: Google Calendarの予定・空き時間を調べ、予定の作成�
    Google Meetが必要なら`draft.create_google_meet=true`を指定する。
    `slack.channels`で`10_competition_general`または相当する周知先を確認して、
    `meeting.create`の1操作に予定・招待先・周知文をまとめる。承認はPythonが1回だけ求める。
+   レトプラ（Retro & Planning）の場合は`retro_planning=true`にする。PythonがNotionの
+   テンプレートから開催日のページを作成し、Member DB全員をUserと予定のゲストに設定して、URLを予定の説明と
+   Slack周知に追加する。`retro_user_ids`等の対応情報はPythonが確定するためAIは入力しない。
 4. 予定だけの質問なら読み取った結果を回答する。予定を手掛かりに公開情報も調べる依頼なら、
    必要な施設名などを使って調査を続け、元の質問に答える。
 

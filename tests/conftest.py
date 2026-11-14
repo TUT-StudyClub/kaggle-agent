@@ -195,6 +195,7 @@ class FakeCalendar(CalendarRepository):
             id=key,
             calendar_alias=alias,
             title=draft.title,
+            description=draft.description or "",
             start=draft.period.start.isoformat(),
             end=draft.period.end.isoformat(),
             url="https://calendar.google.com/event/test",
@@ -243,6 +244,7 @@ class Harness:
         clock: Clock | None = None,
         announcements: AnnouncementSender | None = None,
         kaggle: KaggleService | None = None,
+        retro_documents=None,
     ) -> None:
         if policy is not None:
             self.policy = policy
@@ -281,6 +283,7 @@ class Harness:
             announcements=self.announcements,
             meeting_receipts=self.jobs,
             kaggle=self.kaggle,
+            retro_documents=retro_documents,
         )
 
     def submit(self, text: str = "依頼", event_id: str = "event1") -> str:
