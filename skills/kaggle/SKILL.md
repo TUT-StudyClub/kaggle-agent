@@ -54,4 +54,4 @@ CLIのエイリアス・フラグの省略形を使わず、ヘルプで確認�
 - 成否が不明な変更は再実行しない。実行結果を確認してから別の依頼として扱う。
 
 認証・設定変更・トークン表示はSlack経由では扱わない。
-公式CLI: https://github.com/Kaggle/kaggle-cli/tree/main/docs
+公式CLI: <https://github.com/Kaggle/kaggle-cli/tree/main/docs>
