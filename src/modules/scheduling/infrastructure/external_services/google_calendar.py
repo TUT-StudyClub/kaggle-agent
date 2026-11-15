@@ -2,7 +2,6 @@ import hashlib
 import time
 from datetime import datetime
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
 from modules.scheduling.domain.models import (
     Calendar,
@@ -12,6 +11,7 @@ from modules.scheduling.domain.models import (
     TimeRange,
 )
 from modules.scheduling.domain.repositories import CalendarRepository
+from shared.domain.timezone import JST
 from shared.errors import AgentError, UncertainWrite
 from shared.infrastructure.http import JsonHttp
 
@@ -73,7 +73,7 @@ class GoogleCalendarRepository(CalendarRepository):
                 return (
                     datetime.fromisoformat(value["dateTime"])
                     .astimezone(
-                        ZoneInfo("Asia/Tokyo"),
+                        JST,
                     )
                     .isoformat()
                 )

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from shared.errors import AgentError
 from shared.infrastructure.http import JsonHttp
+from shared.infrastructure.notion import is_removed, plain_text
 
 from ...domain.models import CalendarMember
 from ...domain.repositories import MemberDirectory
@@ -12,10 +13,7 @@ from ...domain.repositories import MemberDirectory
 
 def property_text(props: dict, name: str) -> str:
     prop = props.get(name, {})
-    return "".join(
-        part.get("plain_text", part.get("text", {}).get("content", ""))
-        for part in prop.get(prop.get("type", ""), [])
-    ).strip()
+    return plain_text(prop.get(prop.get("type", ""), [])).strip()
 
 
 def calendar_emails(props: dict) -> frozenset[str]:
@@ -60,7 +58,7 @@ class NotionMemberDirectory(MemberDirectory):
                 payload["start_cursor"] = cursor
             raw = self.http.request("POST", f"{path}/query", read=True, json=payload)
             for row in raw["results"]:
-                if row.get("archived") or row.get("in_trash") or row.get("is_archived"):
+                if is_removed(row):
                     continue
                 props = row["properties"]
 

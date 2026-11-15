@@ -20,6 +20,53 @@ from modules.interaction.domain.reminders import ReminderRepository, ReminderSta
 from modules.interaction.domain.repositories import DeliveryRepository, JobRepository
 from shared.errors import AgentError
 
+# 既存のジョブ・通知を保持したまま、版ごとにテーブルだけを追加する。
+_MIGRATIONS = (
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS reply_deliveries (
+            id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
+        );
+        """,
+    ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS schedule_reminders (
+            key TEXT PRIMARY KEY, state TEXT NOT NULL,
+            message_ts TEXT, updated_at REAL NOT NULL
+        );
+        """,
+    ),
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS meeting_receipts (
+            key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
+        );
+        """,
+    ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS thread_tracking (
+            key TEXT PRIMARY KEY, stopped INTEGER NOT NULL,
+            event_ts TEXT NOT NULL, last_stop_ts TEXT
+        );
+        """,
+    ),
+    (6, "CREATE TABLE IF NOT EXISTS conversation_tracking (key TEXT PRIMARY KEY);"),
+)
+_SCHEMA_VERSION = _MIGRATIONS[-1][0]
+
+# 会話内で有効な承認待ちジョブ。引数は (conversation_key, now)。
+_PENDING_APPROVAL = (
+    "FROM jobs WHERE conversation_key=? AND status='awaiting_approval' "
+    "AND (json_extract(payload,'$.approval_expires_at') IS NULL "
+    "OR json_extract(payload,'$.approval_expires_at') >= ?)"
+)
+
 
 class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository, MeetingRepository):
     """短い独立トランザクション。ジョブはclaim、定期通知は日別の予約で排他する。"""
@@ -29,7 +76,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         self.path = path
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 6:
+            if version > _SCHEMA_VERSION:
                 raise AgentError("database_version", "このバージョンではDBを開けません。")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -54,42 +101,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                     created_at REAL NOT NULL
                 );
             """)
-            if version < 2:
-                # v1のジョブ・通知を保持したまま、返信の復旧用テーブルだけを追加する。
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS reply_deliveries (
-                        id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
-                    );
-                    PRAGMA user_version=2;
-                """)
-            if version < 3:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS schedule_reminders (
-                        key TEXT PRIMARY KEY, state TEXT NOT NULL,
-                        message_ts TEXT, updated_at REAL NOT NULL
-                    );
-                    PRAGMA user_version=3;
-                """)
-            if version < 4:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS meeting_receipts (
-                        key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL
-                    );
-                    PRAGMA user_version=4;
-                """)
-            if version < 5:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS thread_tracking (
-                        key TEXT PRIMARY KEY, stopped INTEGER NOT NULL,
-                        event_ts TEXT NOT NULL, last_stop_ts TEXT
-                    );
-                    PRAGMA user_version=5;
-                """)
-            if version < 6:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS conversation_tracking (key TEXT PRIMARY KEY);
-                    PRAGMA user_version=6;
-                """)
+            for target, script in _MIGRATIONS:
+                if version < target:
+                    db.executescript(f"{script}PRAGMA user_version={target};")
             # 旧版で作成された未期限切れの承認待ちも期限なしへ移行する。
             # すでに期限切れの案は復活させない。
             db.execute(
@@ -108,6 +122,25 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
                 yield db
         finally:
             db.close()
+
+    @staticmethod
+    def _job(db: sqlite3.Connection, job_id: str) -> Job | None:
+        row = db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return Job.model_validate_json(row[0]) if row else None
+
+    @staticmethod
+    def _delivery(db: sqlite3.Connection, delivery_id: str) -> ReplyDelivery | None:
+        row = db.execute(
+            "SELECT payload FROM reply_deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        return ReplyDelivery.model_validate_json(row[0]) if row else None
+
+    def _approve(self, db: sqlite3.Connection, job: Job | None, source: Source, now: float) -> bool:
+        approved = job.approve(source, now) if job else None
+        if approved is None:
+            return False
+        self._save(db, approved)
+        return True
 
     def enqueue(self, message: IncomingMessage) -> Job | None:
         with self.connection() as db:
@@ -158,8 +191,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
 
     def get(self, job_id: str) -> Job | None:
         with self.connection() as db:
-            row = db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
-        return Job.model_validate_json(row[0]) if row else None
+            return self._job(db, job_id)
 
     def _save(self, db: sqlite3.Connection, job: Job) -> None:
         updated = job.model_copy(update={"updated_at": time.time()})
@@ -180,52 +212,33 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
     def approve(self, job_id: str, source: Source, now: float) -> bool:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if not row:
-                return False
-            job = Job.model_validate_json(row[0])
-            approved = job.approve(source, now)
-            if approved is None:
-                return False
-            self._save(db, approved)
-        return True
+            return self._approve(db, self._job(db, job_id), source, now)
 
     def approve_pending(self, source: Source, now: float, message_ts: str | None = None) -> bool:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = db.execute(
-                "SELECT payload FROM jobs WHERE conversation_key=? AND status='awaiting_approval' "
-                "AND (json_extract(payload,'$.approval_expires_at') IS NULL "
-                "OR json_extract(payload,'$.approval_expires_at') >= ?)",
-                (source.conversation_key, now),
+                f"SELECT payload {_PENDING_APPROVAL}", (source.conversation_key, now)
             ).fetchall()
             if len(rows) != 1:
                 return False
             job = Job.model_validate_json(rows[0][0])
-            row = db.execute(
-                "SELECT payload FROM reply_deliveries WHERE id=?",
-                (f"{job.id}/awaiting_approval",),
-            ).fetchone()
-            if row is None:
-                return False
-            delivery = ReplyDelivery.model_validate_json(row[0])
-            if delivery.state != "done" or delivery.source != source or not delivery.message_ts:
+            delivery = self._delivery(db, f"{job.id}/awaiting_approval")
+            if (
+                delivery is None
+                or delivery.state != "done"
+                or delivery.source != source
+                or not delivery.message_ts
+            ):
                 return False
             if message_ts is not None and Decimal(message_ts) <= Decimal(delivery.message_ts):
                 return False
-            approved = job.approve(source, now)
-            if approved is None:
-                return False
-            self._save(db, approved)
-        return True
+            return self._approve(db, job, source, now)
 
     def pending_approval_count(self, source: Source, now: float) -> int:
         with self.connection() as db:
             return db.execute(
-                "SELECT count(*) FROM jobs WHERE conversation_key=? AND status='awaiting_approval' "
-                "AND (json_extract(payload,'$.approval_expires_at') IS NULL "
-                "OR json_extract(payload,'$.approval_expires_at') >= ?)",
-                (source.conversation_key, now),
+                f"SELECT count(*) {_PENDING_APPROVAL}", (source.conversation_key, now)
             ).fetchone()[0]
 
     def approve_reaction(self, reaction: ApprovalReaction, now: float) -> bool:
@@ -242,19 +255,8 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             if len(rows) != 1:
                 return False
             delivery = ReplyDelivery.model_validate_json(rows[0][0])
-            row = db.execute(
-                "SELECT payload FROM jobs WHERE id=?", (delivery.id.split("/")[0],)
-            ).fetchone()
-            if row is None:
-                return False
-            job = Job.model_validate_json(row[0])
-            approved = job.approve(
-                delivery.source.model_copy(update={"user_id": reaction.user_id}), now
-            )
-            if approved is None:
-                return False
-            self._save(db, approved)
-        return True
+            approver = delivery.source.model_copy(update={"user_id": reaction.user_id})
+            return self._approve(db, self._job(db, delivery.id.split("/")[0]), approver, now)
 
     def _clarification_job(self, db: sqlite3.Connection, source: Source) -> Job | None:
         if db.execute(
@@ -272,24 +274,24 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
         dialogue = context.get("dialogue", [])
         if not pending or not dialogue:
             return None
-        job_id = dialogue[-1].get("job_id")
-        row = db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if row is None:
-            return None
-        job = Job.model_validate_json(row[0])
-        if job.status != JobStatus.SUCCEEDED or job.message.source != source or job.write_started:
+        job = self._job(db, dialogue[-1].get("job_id"))
+        if (
+            job is None
+            or job.status != JobStatus.SUCCEEDED
+            or job.message.source != source
+            or job.write_started
+        ):
             return None
         stored = json.loads(job.result_json or "{}")
         if stored.get("pending_clarification") != pending:
             return None
-        row = db.execute(
-            "SELECT payload FROM reply_deliveries WHERE id=?",
-            (f"{job.id}/succeeded",),
-        ).fetchone()
-        if row is None:
-            return None
-        delivery = ReplyDelivery.model_validate_json(row[0])
-        if delivery.source != source or delivery.state != "done" or not delivery.message_ts:
+        delivery = self._delivery(db, f"{job.id}/succeeded")
+        if (
+            delivery is None
+            or delivery.source != source
+            or delivery.state != "done"
+            or not delivery.message_ts
+        ):
             return None
         return job
 
@@ -435,16 +437,16 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             ).fetchone()
         return row[0] if row else "{}"
 
+    @staticmethod
+    def _remember(db: sqlite3.Connection, source: Source, result_json: str) -> None:
+        db.execute(
+            "INSERT OR REPLACE INTO conversations VALUES (?,?,?)",
+            (source.conversation_key, result_json, time.time()),
+        )
+
     def remember(self, source: Source, result_json: str) -> None:
         with self.connection() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO conversations VALUES (?,?,?)",
-                (
-                    source.conversation_key,
-                    result_json,
-                    time.time(),
-                ),
-            )
+            self._remember(db, source, result_json)
 
     def mapping(self, thread_key: str) -> str | None:
         with self.connection() as db:
@@ -469,15 +471,16 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
             ).fetchone()
         return row[0] if row else None
 
+    @staticmethod
+    def _map_page(db: sqlite3.Connection, thread_key: str, page_id: str) -> None:
+        db.execute(
+            "INSERT INTO source_mappings VALUES (?,?) ON CONFLICT(key) DO NOTHING",
+            (thread_key, page_id),
+        )
+
     def map_page(self, thread_key: str, page_id: str) -> None:
         with self.connection() as db:
-            db.execute(
-                "INSERT INTO source_mappings VALUES (?,?) ON CONFLICT(key) DO NOTHING",
-                (
-                    thread_key,
-                    page_id,
-                ),
-            )
+            self._map_page(db, thread_key, page_id)
 
     def _audit(self, db: sqlite3.Connection, job: Job, outcome: str) -> None:
         kind = json.loads(job.plan_json)["action"]["kind"] if job.plan_json else None
@@ -569,15 +572,9 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
     ) -> None:
         with self.connection() as db:
             self._save(db, job)
-            db.execute(
-                "INSERT OR REPLACE INTO conversations VALUES (?,?,?)",
-                (job.message.source.conversation_key, context_json, time.time()),
-            )
+            self._remember(db, job.message.source, context_json)
             if page_mapping is not None:
-                db.execute(
-                    "INSERT INTO source_mappings VALUES (?,?) ON CONFLICT(key) DO NOTHING",
-                    page_mapping,
-                )
+                self._map_page(db, *page_mapping)
             self._notify(db, job, text)
             self._audit(db, job, outcome)
 
@@ -594,10 +591,7 @@ class SQLiteJobRepository(JobRepository, DeliveryRepository, ReminderRepository,
 
     def get_delivery(self, notification_id: str) -> ReplyDelivery | None:
         with self.connection() as db:
-            row = db.execute(
-                "SELECT payload FROM reply_deliveries WHERE id=?", (notification_id,)
-            ).fetchone()
-        return ReplyDelivery.model_validate_json(row[0]) if row else None
+            return self._delivery(db, notification_id)
 
     def save_delivery(self, delivery: ReplyDelivery) -> None:
         with self.connection() as db:

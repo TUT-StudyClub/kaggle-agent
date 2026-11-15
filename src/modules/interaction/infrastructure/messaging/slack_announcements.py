@@ -3,11 +3,11 @@ import re
 from uuid import NAMESPACE_URL, uuid5
 
 from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError, SlackClientError
+from slack_sdk.errors import SlackClientError
 
 from modules.interaction.application.ports.announcements import AnnouncementSender
-from modules.interaction.infrastructure.messaging.formatting import message_payload
-from shared.errors import AgentError, UncertainWrite
+from modules.interaction.infrastructure.messaging.slack_posting import post_top_level
+from shared.errors import AgentError
 
 
 class SlackAnnouncementSender(AnnouncementSender):
@@ -49,34 +49,17 @@ class SlackAnnouncementSender(AnnouncementSender):
 
     def send(self, channel_id: str, text: str, key: str) -> str:
         self._authorize(channel_id)
-        try:
-            response = self.client.chat_postMessage(
-                channel=channel_id,
-                **message_payload(text, slack_markup=True),
-                parse="none",
-                link_names=False,
-                unfurl_links=False,
-                unfurl_media=False,
-                client_msg_id=str(uuid5(NAMESPACE_URL, f"kaggle-agent/meeting/{key}")),
-                metadata={
-                    "event_type": "kaggle_agent_meeting",
-                    "event_payload": {"key": self._marker(key)},
-                },
-            )
-        except SlackApiError as error:
-            if error.response.status_code >= 500 or error.response.get("error") in {
-                "internal_error",
-                "fatal_error",
-                "request_timeout",
-            }:
-                raise UncertainWrite() from None
-            raise AgentError("announcement_rejected", "Slackが周知を拒否しました。") from None
-        except SlackClientError, OSError:
-            raise UncertainWrite() from None
-        ts = response.get("ts")
-        if not isinstance(ts, str) or not re.fullmatch(r"\d+\.\d+", ts):
-            raise UncertainWrite()
-        return ts
+        return post_top_level(
+            self.client,
+            channel_id,
+            text,
+            ("announcement_rejected", "Slackが周知を拒否しました。"),
+            client_msg_id=str(uuid5(NAMESPACE_URL, f"kaggle-agent/meeting/{key}")),
+            metadata={
+                "event_type": "kaggle_agent_meeting",
+                "event_payload": {"key": self._marker(key)},
+            },
+        )
 
     def find(self, channel_id: str, text: str, key: str) -> str | None:
         self._authorize(channel_id)

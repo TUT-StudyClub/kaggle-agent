@@ -58,11 +58,8 @@ class KaggleCLIRunner(KaggleRunner):
             )
         return result
 
-    def prepare(self, command: str, arguments: list[str]) -> KaggleInvocation:
-        spec = self._spec(command)
-        flags = {flag: option for option in spec["options"] for flag in option["flags"]}
-        positional = [option for option in spec["options"] if not option["flags"]]
-        # 略記・結合した短いオプションはCLIに解釈させず、既知の完全なフラグだけを通す。
+    @staticmethod
+    def _tokens(arguments: list[str]) -> list[str]:
         tokens = []
         for arg in arguments:
             if not arg or len(arg) > 2048 or any(ord(char) < 32 for char in arg):
@@ -71,12 +68,20 @@ class KaggleCLIRunner(KaggleRunner):
                 tokens.extend(arg.split("=", 1))
             else:
                 tokens.append(arg)
+        return tokens
+
+    @staticmethod
+    def _pairs(spec: dict, tokens: list[str]) -> list[tuple[dict, str | None]]:
+        """トークンをカタログのオプション定義と値の組へ対応付ける。"""
+        flags = {flag: option for option in spec["options"] for flag in option["flags"]}
+        positional = [option for option in spec["options"] if not option["flags"]]
         pairs: list[tuple[dict, str | None]] = []
         position = 0
         index = 0
         while index < len(tokens):
             token = tokens[index]
             if token.startswith("-"):
+                # 略記・結合した短いオプションはCLIに解釈させず、既知の完全なフラグだけを通す。
                 option = flags.get(token)
                 if option is None:
                     raise AgentError("kaggle_arguments", "未対応のKaggleオプションだよ。")
@@ -96,6 +101,11 @@ class KaggleCLIRunner(KaggleRunner):
                 if option["nargs"] != "+":
                     position += 1
             index += 1
+        return pairs
+
+    def prepare(self, command: str, arguments: list[str]) -> KaggleInvocation:
+        spec = self._spec(command)
+        pairs = self._pairs(spec, self._tokens(arguments))
         write = spec["write"] or (
             command == "datasets metadata" and any(opt["dest"] == "update" for opt, _ in pairs)
         )
@@ -167,34 +177,53 @@ class KaggleCLIRunner(KaggleRunner):
             raise AgentError("kaggle_path", "Kaggle作業先にシンボリックリンクは使えないよ。")
         self._safe_path(str(cwd))
         cwd.mkdir(parents=True, exist_ok=True, mode=0o700)
+        args = self._run_arguments(invocation, cwd)
+        command = [sys.executable, "-I", "-m", "kaggle", *invocation.command.split(), *args]
+        raw_output = self._execute(command, cwd, write=invocation.write)
+        text = raw_output[:48000].decode("utf-8", errors="replace")
+        if self.token:
+            text = text.replace(self.token, "[REDACTED]")
+        files = [str(path.relative_to(self.workspace)) for path in cwd.rglob("*") if path.is_file()]
+        return {
+            "kaggle_command": invocation.command,
+            "output": text,
+            "output_truncated": len(raw_output) > 48000,
+            "files": sorted(files)[:50],
+        }
+
+    def _run_arguments(self, invocation: KaggleInvocation, cwd: Path) -> list[str]:
+        """検証済みの引数へ、取得先や確認省略などPythonが決める引数を足す。"""
         args = list(invocation.arguments)
         spec = self._spec(invocation.command)
         if not invocation.write:
             for option in spec["options"]:
                 if option["dest"] in {"path", "folder", "output"} and option["nargs"] != 0:
                     args.extend([option["flags"][-1], str(cwd)])
-        else:
-            # CLIの対話確認は既存のSlack承認で代替する。
-            if any(option["dest"] == "no_confirm" for option in spec["options"]):
-                args.append("--yes")
-            for name in ("kernel-metadata.json",):
-                folders = [cwd]
-                for index, arg in enumerate(args[:-1]):
-                    if arg in {"--path", "-p"}:
-                        folders.append(Path(args[index + 1]))
-                for folder in folders:
-                    metadata = folder / name
-                    if invocation.command == "kernels push" and metadata.is_file():
-                        raw = json.loads(metadata.read_text())
-                        code = folder / str(raw.get("code_file", ""))
-                        self._safe_path(str(code))
+            return args
+        # CLIの対話確認は既存のSlack承認で代替する。
+        if any(option["dest"] == "no_confirm" for option in spec["options"]):
+            args.append("--yes")
+        if invocation.command == "kernels push":
+            # メタデータが指すコードファイルからも、作業範囲外を読ませない。
+            folders = [cwd]
+            for index, arg in enumerate(args[:-1]):
+                if arg in {"--path", "-p"}:
+                    folders.append(Path(args[index + 1]))
+            for folder in folders:
+                metadata = folder / "kernel-metadata.json"
+                if metadata.is_file():
+                    raw = json.loads(metadata.read_text())
+                    self._safe_path(str(folder / str(raw.get("code_file", ""))))
+        return args
+
+    def _execute(self, command: list[str], cwd: Path, *, write: bool) -> bytes:
+        """認証情報だけを渡した環境でCLIを実行し、出力の先頭48001バイトを返す。"""
         env = {
             k: v for k, v in os.environ.items() if k in {"HOME", "PATH", "LANG", "LC_ALL", "TMPDIR"}
         }
         env["KAGGLE_CONFIG_DIR"] = str(self.config_dir)
         if self.token:
             env["KAGGLE_API_TOKEN"] = self.token
-        command = [sys.executable, "-I", "-m", "kaggle", *invocation.command.split(), *args]
         with tempfile.TemporaryFile() as output:
             try:
                 with subprocess.Popen(
@@ -211,7 +240,7 @@ class KaggleCLIRunner(KaggleRunner):
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
-                        if invocation.write:
+                        if write:
                             raise UncertainWrite() from None
                         raise AgentError(
                             "kaggle_timeout", "Kaggleの応答待ちでタイムアウトしたよ。"
@@ -226,14 +255,4 @@ class KaggleCLIRunner(KaggleRunner):
                     "kaggle_failed", "Kaggle操作に失敗したよ。認証・権限・入力を確認してね。"
                 )
             output.seek(0)
-            raw_output = output.read(48001)
-        text = raw_output[:48000].decode("utf-8", errors="replace")
-        if self.token:
-            text = text.replace(self.token, "[REDACTED]")
-        files = [str(path.relative_to(self.workspace)) for path in cwd.rglob("*") if path.is_file()]
-        return {
-            "kaggle_command": invocation.command,
-            "output": text,
-            "output_truncated": len(raw_output) > 48000,
-            "files": sorted(files)[:50],
-        }
+            return output.read(48001)

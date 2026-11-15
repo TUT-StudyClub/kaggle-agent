@@ -38,7 +38,7 @@ def doctor(probe: bool, evaluate: bool = False) -> None:
             raise AgentError("evaluation_failed", "日本語の評価ケースが不合格でした。")
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Slack AIエージェント (Python 3.14)")
     parser.add_argument("--config", type=Path, default=Path(".env"), help="読み込む.envファイル")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -58,60 +58,68 @@ def main() -> None:
         "reconcile", help="結果不明の書き込みを外部APIの読取りだけで照合"
     )
     reconcile.add_argument("job_id")
-    args = parser.parse_args()
+    return parser
+
+
+def _report_services(config: Path) -> None:
+    settings, checks = configuration_report(config)
+    if settings is not None and all(check.ok for check in checks):
+        checks.extend(service_report(settings))
+    for check in checks:
+        print(f"{'OK' if check.ok else '未完了'} {check.name}: {check.message}")
+    if not all(check.ok for check in checks):
+        raise SystemExit(1)
+
+
+def _execute(args: argparse.Namespace) -> None:
+    if args.command == "init":
+        created = initialize(Path.cwd())
+        print("作成: " + ", ".join(created) if created else "既存の設定ファイルを保持しました。")
+        print(".envに接続先IDとトークンを入力し、task doctorを実行してください。")
+        return
+    if args.command == "doctor":
+        doctor(args.probe, args.evaluate)
+        if args.services:
+            _report_services(args.config)
+        return
+    settings = Settings.load(args.config)
+    if args.command == "auth-google":
+        authorize_google(settings)
+        print("Google OAuthの認証ファイルを保存しました。task doctorで接続先を確認してください。")
+        return
+    if args.command == "run":
+        run(settings)
+        return
+    if args.command == "reconcile":
+        with ExitStack() as stack:
+            _, agent = build(settings, stack)
+            print(
+                "照合済み"
+                if agent.reconcile(args.job_id)
+                else "結果を確認できません。再送しません。"
+            )
+        return
+    jobs = build_job_management(settings.database)
+    if args.command == "purge":
+        print(f"削除ジョブ数: {jobs.purge(time.time() - settings.retention_days * 86400)}")
+        return
+    job = jobs.status(args.job_id)
+    print(
+        json.dumps(
+            {"id": job.id, "status": job.status, "error_code": job.error_code}
+            if job
+            else {"error": "not_found"},
+            ensure_ascii=False,
+        )
+    )
+
+
+def main() -> None:
+    args = _parser().parse_args()
     # HTTP/SDKのDEBUGログには秘密情報や本文が含まれるので有効化しない。
     logging.basicConfig(level=logging.CRITICAL)
     try:
-        if args.command == "init":
-            created = initialize(Path.cwd())
-            print(
-                "作成: " + ", ".join(created) if created else "既存の設定ファイルを保持しました。"
-            )
-            print(".envに接続先IDとトークンを入力し、task doctorを実行してください。")
-            return
-        if args.command == "doctor":
-            doctor(args.probe, args.evaluate)
-            if args.services:
-                settings, checks = configuration_report(args.config)
-                if settings is not None and all(check.ok for check in checks):
-                    checks.extend(service_report(settings))
-                for check in checks:
-                    print(f"{'OK' if check.ok else '未完了'} {check.name}: {check.message}")
-                if not all(check.ok for check in checks):
-                    raise SystemExit(1)
-            return
-        settings = Settings.load(args.config)
-        if args.command == "auth-google":
-            authorize_google(settings)
-            print(
-                "Google OAuthの認証ファイルを保存しました。task doctorで接続先を確認してください。"
-            )
-            return
-        if args.command == "run":
-            run(settings)
-            return
-        if args.command == "reconcile":
-            with ExitStack() as stack:
-                _, agent = build(settings, stack)
-                print(
-                    "照合済み"
-                    if agent.reconcile(args.job_id)
-                    else "結果を確認できません。再送しません。"
-                )
-            return
-        jobs = build_job_management(settings.database)
-        if args.command == "purge":
-            print(f"削除ジョブ数: {jobs.purge(time.time() - settings.retention_days * 86400)}")
-        else:
-            job = jobs.status(args.job_id)
-            print(
-                json.dumps(
-                    {"id": job.id, "status": job.status, "error_code": job.error_code}
-                    if job
-                    else {"error": "not_found"},
-                    ensure_ascii=False,
-                )
-            )
+        _execute(args)
     except AgentError as error:
         print(f"{error.code}: {error.message}", file=sys.stderr)
         raise SystemExit(1) from None

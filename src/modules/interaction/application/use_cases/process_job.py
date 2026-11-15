@@ -1,7 +1,7 @@
 import json
-import re
 from decimal import Decimal
-from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel
 
 from modules.interaction.application.policies.access import AgentPolicy
 from modules.interaction.application.ports.messenger import Activity, Messenger
@@ -11,6 +11,7 @@ from modules.interaction.application.services.availability_reply import availabi
 from modules.interaction.application.services.completion import JobCompletion
 from modules.interaction.application.services.meetings import meeting_preview
 from modules.interaction.application.services.tools import ToolRegistry
+from modules.interaction.domain.approval import approval_job_id
 from modules.interaction.domain.models import (
     Job,
     JobStatus,
@@ -18,6 +19,7 @@ from modules.interaction.domain.models import (
 from modules.interaction.domain.repositories import JobRepository
 from modules.planning.public import (
     WRITE_KINDS,
+    Action,
     ApprovalRequest,
     Clarify,
     CreateMeeting,
@@ -33,7 +35,27 @@ from modules.scheduling.public import (
     SchedulingService,
 )
 from shared.application.ports.clock import Clock
+from shared.domain.timezone import JST
 from shared.errors import AgentError
+
+
+class _Run(BaseModel):
+    """1ジョブの処理中に変わる状態。失敗時は最新のジョブ状態から遷移させる。"""
+
+    job: Job
+    followup: bool
+    working: bool = False
+
+
+def _approved_reply(action: Action, result: dict[str, object]) -> str:
+    if not isinstance(action, CreateMeeting):
+        return "実行しました。\n" + json.dumps(result, ensure_ascii=False, indent=2)
+    return (
+        f"「{action.event.draft.title}」を作成して、"
+        + ("招待メール送信を要求したよ。" if action.event.guest_user_ids else "")
+        + f"#{action.announcement.channel_name}への周知も完了したよ。"
+        + (f"\nドキュメント: {result['document_url']}" if result.get("document_url") else "")
+    )
 
 
 class ProcessJobUseCase:
@@ -65,249 +87,245 @@ class ProcessJobUseCase:
         job = self.jobs.claim()
         if not job:
             return False
-        followup = job.message.addressing == "followup" and not job.plan_json
-        activity_started = False
+        run = _Run(job=job, followup=job.message.addressing == "followup" and not job.plan_json)
         try:
-            if not self.settings.allows(job.message.source):
-                raise AgentError("forbidden_source", "Slackの許可範囲外です。")
-            if not job.plan_json and self.jobs.pending_approval_count(
-                job.message.source, self.clock.timestamp()
-            ):
-                if followup and not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                try:
-                    decision = self.planner.check_approval(
-                        ApprovalRequest(
-                            instruction=job.message.text,
-                            requester_user_id=job.message.source.user_id,
-                            addressing=job.message.addressing,
-                            thread=self._thread_at_message(job),
-                        )
-                    )
-                except AgentError:
-                    if followup and not self.jobs.accepts_followup(job.message):
-                        self._ignore(job, "tracking_stopped")
-                    else:
-                        self.completion.finish(
-                            job,
-                            {},
-                            "承認の意思を確認できなかったよ。操作は実行していないので、"
-                            "もう一度伝えるか、承認案にリアクションしてね。",
-                        )
-                    return True
-                if followup and not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                if decision.approves:
-                    if self.jobs.approve_pending(
-                        job.message.source, self.clock.timestamp(), job.message.message_ts
-                    ):
-                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
-                    else:
-                        self.completion.finish(
-                            job,
-                            {},
-                            "承認する案を特定できないよ。対象の承認案にリアクションしてね。",
-                        )
-                    return True
-            if followup:
-                if not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                thread = self._thread_at_message(job)
-                context = self.jobs.context(job.message.source)
-                approval = re.fullmatch(r"承認\s+([a-f0-9]{32})", job.message.text.strip())
-                if approval:
-                    approved = self.jobs.approve(
-                        approval[1], job.message.source, self.clock.timestamp()
-                    )
-                    if not approved:
-                        self.completion.finish(
-                            job,
-                            {},
-                            "承認できません。対象・利用者・スレッド・有効期限を確認してください。",
-                        )
-                    else:
-                        self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
-                    return True
-            activity_started = True
-            self.activity.update(job.message.source, Activity.READING)
-            if job.plan_json:
-                if job.approval_expires_at is not None and (
-                    job.approval_expires_at < self.clock.timestamp()
-                ):
-                    raise AgentError(
-                        "approval_expired",
-                        "承認の有効期限が切れたため、操作は実行していないよ。再度依頼してね。",
-                    )
-                plan = Plan.model_validate_json(job.plan_json)
-                job = job.start_write()
-                self.jobs.save(job)
-                result = self.actions.execute(job, plan)
-                text = (
-                    f"「{plan.action.event.draft.title}」を作成して、"
-                    + ("招待メール送信を要求したよ。" if plan.action.event.guest_user_ids else "")
-                    + f"#{plan.action.announcement.channel_name}への周知も完了したよ。"
-                    + (
-                        f"\nドキュメント: {result['document_url']}"
-                        if result.get("document_url")
-                        else ""
-                    )
-                    if isinstance(plan.action, CreateMeeting)
-                    else "実行しました。\n" + json.dumps(result, ensure_ascii=False, indent=2)
-                )
-                self.completion.finish(
-                    job,
-                    result,
-                    text,
-                )
-                return True
-            observations = []
-            rejected_plans: set[str] = set()
-            if not followup:
-                thread = self._thread_at_message(job)
-                context = self.jobs.context(job.message.source)
-            while True:
-                if followup and not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                self.activity.update(job.message.source, Activity.THINKING)
-                plan = self.planner.plan(
-                    PlanningRequest(
-                        instruction=job.message.text,
-                        now=self.clock.now().astimezone(ZoneInfo("Asia/Tokyo")).isoformat(),
-                        context=context,
-                        thread=thread,
-                        observations=observations,
-                        resources={
-                            "requester_slack_user_id": job.message.source.user_id,
-                            "kaggle_may_write": (
-                                self.settings.kaggle_owner_user_id is not None
-                                and job.message.source.user_id == self.settings.kaggle_owner_user_id
-                            ),
-                            "notion_pages": sorted(self.settings.notion_pages),
-                            "notion_data_sources": sorted(
-                                self.settings.allowed_notion_data_sources
-                            ),
-                            "notion_competition_data_source_id": (
-                                self.settings.notion_competition_data_source_id
-                            ),
-                            "notion_parents": self.settings.notion_parents,
-                            "calendars": {
-                                k: {
-                                    "writable": v.writable,
-                                    "label_users": v.label_users,
-                                    "member_directory": v.member_data_source_id is not None,
-                                    "creation_label": v.creation_label.model_dump(mode="json")
-                                    if v.creation_label is not None
-                                    else None,
-                                }
-                                for k, v in self.settings.calendars.items()
-                            },
-                        },
-                    )
-                )
-                if followup and not self.jobs.accepts_followup(job.message):
-                    self._ignore(job, "tracking_stopped")
-                    return True
-                if not self.tools.skillbook.permits(plan.action.kind):
-                    raise AgentError("forbidden_tool", "この操作はツール設定で許可されていません。")
-                match plan.action:
-                    case Reply(text=text) | Clarify(question=text):
-                        last = observations[-1] if observations else json.loads(context)
-                        self.completion.finish(
-                            job,
-                            last,
-                            text,
-                            plan.action.question if isinstance(plan.action, Clarify) else None,
-                        )
-                        return True
-                if (
-                    self.scheduling.uses_member_directory
-                    and (
-                        plan.action.kind.startswith("calendar.")
-                        or isinstance(plan.action, CreateMeeting)
-                    )
-                    and plan.action.kind != "calendar.list"
-                    and not any("calendars" in observation for observation in observations)
-                ):
-                    # 過去の会話や古い操作案の対応で進めず、この依頼のDB対応を先に取得する。
-                    observations.append(self.actions.execute(job, Plan(action=ListCalendars())))
-                    continue
-                if plan.action.kind in WRITE_KINDS:
-                    self.activity.update(job.message.source, Activity.PREPARING)
-                    try:
-                        plan = self.actions.prepare(job, plan)
-                    except AgentError as error:
-                        if self._recover_input(job, plan, error, observations, rejected_plans):
-                            continue
-                        if error.code not in {
-                            "invitation_missing_email",
-                            "invitation_ambiguous_email",
-                        }:
-                            raise
-                        self.completion.finish(job, {}, error.message, error.message)
-                        return True
-                    job = job.transition(
-                        JobStatus.AWAITING_APPROVAL,
-                        plan_json=plan.model_dump_json(),
-                        approval_expires_at=None,
-                        approval_user_id=(
-                            self.settings.kaggle_owner_user_id
-                            if isinstance(plan.action, UpdateInstructions)
-                            else None
-                        ),
-                    )
-                    preview = json.dumps(
-                        plan.action.model_dump(mode="json"), ensure_ascii=False, indent=2
-                    ).replace("`", "\\u0060")
-                    description = (
-                        meeting_preview(plan.action)
-                        if isinstance(plan.action, CreateMeeting)
-                        else f"以下の操作を承認しますか？\n\n```json\n{preview}\n```"
-                    )
-                    if isinstance(plan.action, UpdateInstructions):
-                        description = (
-                            f"<@{self.settings.kaggle_owner_user_id}> 変更案の承認をお願いします。"
-                            "承認する場合はこのメッセージに 👍 を付けてね。\n\n" + description
-                        )
-                    self.jobs.notify(
-                        job,
-                        description,
-                        outcome="awaiting_approval",
-                    )
-                    return True
-                try:
-                    result = self.actions.execute(job, plan)
-                except AgentError as error:
-                    if self._recover_input(job, plan, error, observations, rejected_plans):
-                        continue
-                    raise
-                if isinstance(plan.action, FindFree):
-                    # 日付・時刻・判定はPythonの計算結果から直接返す。AIに再編集させない。
-                    self.completion.finish(job, result, availability_reply(result))
-                    return True
-                observations.append(result)
+            self._process(run)
         except AgentError as error:
-            failed = job.transition(JobStatus.FAILED, error_code=error.code)
+            failed = run.job.transition(JobStatus.FAILED, error_code=error.code)
             self.jobs.notify(
                 failed,
                 error.message
                 if error.code == "kaggle_input_stalled"
-                else f"ジョブ {job.id}: {error.message} [{error.code}]",
+                else f"ジョブ {failed.id}: {error.message} [{error.code}]",
                 outcome=error.code,
             )
         except Exception:
             # SDK例外・ValidationError等をそのままSlackやログへ流さない。
-            failed = job.transition(JobStatus.FAILED, error_code="internal_error")
+            failed = run.job.transition(JobStatus.FAILED, error_code="internal_error")
             self.jobs.notify(
-                failed, f"ジョブ {job.id}: 内部エラーで停止しました。", outcome="internal_error"
+                failed, f"ジョブ {failed.id}: 内部エラーで停止しました。", outcome="internal_error"
             )
         finally:
-            if activity_started:
-                self.activity.update(job.message.source, Activity.IDLE)
+            if run.working:
+                self.activity.update(run.job.message.source, Activity.IDLE)
         return True
+
+    def _process(self, run: _Run) -> None:
+        job = run.job
+        source = job.message.source
+        if not self.settings.allows(source):
+            raise AgentError("forbidden_source", "Slackの許可範囲外です。")
+        if (
+            not job.plan_json
+            and self.jobs.pending_approval_count(source, self.clock.timestamp())
+            and self._answer_pending_approval(run)
+        ):
+            return
+        conversation = None
+        if run.followup:
+            if self._stale(run):
+                return
+            conversation = self._conversation(job)
+            if self._approve_by_id(job):
+                return
+        run.working = True
+        self.activity.update(source, Activity.READING)
+        if job.plan_json:
+            self._execute_approved(run)
+            return
+        if conversation is None:
+            conversation = self._conversation(job)
+        self._plan_and_act(run, *conversation)
+
+    def _stale(self, run: _Run) -> bool:
+        """!stop 後に届いた追従発言は、処理のどの段階でも応答せずに終える。"""
+        if not run.followup or self.jobs.accepts_followup(run.job.message):
+            return False
+        self.jobs.finish_silently(run.job.transition(JobStatus.IGNORED), "tracking_stopped")
+        return True
+
+    def _answer_pending_approval(self, run: _Run) -> bool:
+        """承認待ちの案がある会話での発言を承認として扱えたら True。通常の依頼なら False。"""
+        job = run.job
+        if self._stale(run):
+            return True
+        try:
+            decision = self.planner.check_approval(
+                ApprovalRequest(
+                    instruction=job.message.text,
+                    requester_user_id=job.message.source.user_id,
+                    addressing=job.message.addressing,
+                    thread=self._thread_at_message(job),
+                )
+            )
+        except AgentError:
+            if not self._stale(run):
+                self.completion.finish(
+                    job,
+                    {},
+                    "承認の意思を確認できなかったよ。操作は実行していないので、"
+                    "もう一度伝えるか、承認案にリアクションしてね。",
+                )
+            return True
+        if self._stale(run):
+            return True
+        if not decision.approves:
+            return False
+        if self.jobs.approve_pending(
+            job.message.source, self.clock.timestamp(), job.message.message_ts
+        ):
+            self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
+        else:
+            self.completion.finish(
+                job, {}, "承認する案を特定できないよ。対象の承認案にリアクションしてね。"
+            )
+        return True
+
+    def _approve_by_id(self, job: Job) -> bool:
+        """「承認 <ジョブID>」形式の追従発言を処理したら True。"""
+        approval_id = approval_job_id(job.message.text)
+        if approval_id is None:
+            return False
+        if self.jobs.approve(approval_id, job.message.source, self.clock.timestamp()):
+            self.jobs.finish_silently(job.transition(JobStatus.SUCCEEDED), "approved")
+        else:
+            self.completion.finish(
+                job, {}, "承認できません。対象・利用者・スレッド・有効期限を確認してください。"
+            )
+        return True
+
+    def _execute_approved(self, run: _Run) -> None:
+        job = run.job
+        if job.approval_expires_at is not None and job.approval_expires_at < self.clock.timestamp():
+            raise AgentError(
+                "approval_expired",
+                "承認の有効期限が切れたため、操作は実行していないよ。再度依頼してね。",
+            )
+        plan = Plan.model_validate_json(job.plan_json or "")
+        run.job = job = job.start_write()
+        self.jobs.save(job)
+        result = self.actions.execute(job, plan)
+        self.completion.finish(job, result, _approved_reply(plan.action, result))
+
+    def _plan_and_act(self, run: _Run, thread: str, context: str) -> None:
+        job = run.job
+        source = job.message.source
+        observations: list[dict] = []
+        rejected_plans: set[str] = set()
+        while True:
+            if self._stale(run):
+                return
+            self.activity.update(source, Activity.THINKING)
+            plan = self.planner.plan(
+                PlanningRequest(
+                    instruction=job.message.text,
+                    now=self.clock.now().astimezone(JST).isoformat(),
+                    context=context,
+                    thread=thread,
+                    observations=observations,
+                    resources=self._resources(job),
+                )
+            )
+            if self._stale(run):
+                return
+            action = plan.action
+            if not self.tools.skillbook.permits(action.kind):
+                raise AgentError("forbidden_tool", "この操作はツール設定で許可されていません。")
+            match action:
+                case Reply(text=text) | Clarify(question=text):
+                    last = observations[-1] if observations else json.loads(context)
+                    self.completion.finish(
+                        job, last, text, action.question if isinstance(action, Clarify) else None
+                    )
+                    return
+            if self._needs_member_directory(action, observations):
+                # 過去の会話や古い操作案の対応で進めず、この依頼のDB対応を先に取得する。
+                observations.append(self.actions.execute(job, Plan(action=ListCalendars())))
+                continue
+            if action.kind in WRITE_KINDS:
+                self.activity.update(source, Activity.PREPARING)
+                try:
+                    plan = self.actions.prepare(job, plan)
+                except AgentError as error:
+                    if self._recover_input(job, plan, error, observations, rejected_plans):
+                        continue
+                    if error.code not in {
+                        "invitation_missing_email",
+                        "invitation_ambiguous_email",
+                    }:
+                        raise
+                    self.completion.finish(job, {}, error.message, error.message)
+                    return
+                self._request_approval(run, plan)
+                return
+            try:
+                result = self.actions.execute(job, plan)
+            except AgentError as error:
+                if self._recover_input(job, plan, error, observations, rejected_plans):
+                    continue
+                raise
+            if isinstance(action, FindFree):
+                # 日付・時刻・判定はPythonの計算結果から直接返す。AIに再編集させない。
+                self.completion.finish(job, result, availability_reply(result))
+                return
+            observations.append(result)
+
+    def _resources(self, job: Job) -> dict[str, object]:
+        settings = self.settings
+        user_id = job.message.source.user_id
+        return {
+            "requester_slack_user_id": user_id,
+            "kaggle_may_write": (
+                settings.kaggle_owner_user_id is not None
+                and user_id == settings.kaggle_owner_user_id
+            ),
+            "notion_pages": sorted(settings.notion_pages),
+            "notion_data_sources": sorted(settings.allowed_notion_data_sources),
+            "notion_competition_data_source_id": settings.notion_competition_data_source_id,
+            "notion_parents": settings.notion_parents,
+            "calendars": {
+                alias: {
+                    "writable": calendar.writable,
+                    "label_users": calendar.label_users,
+                    "member_directory": calendar.member_data_source_id is not None,
+                    "creation_label": calendar.creation_label.model_dump(mode="json")
+                    if calendar.creation_label is not None
+                    else None,
+                }
+                for alias, calendar in settings.calendars.items()
+            },
+        }
+
+    def _needs_member_directory(self, action: Action, observations: list[dict]) -> bool:
+        return (
+            self.scheduling.uses_member_directory
+            and (action.kind.startswith("calendar.") or isinstance(action, CreateMeeting))
+            and action.kind != "calendar.list"
+            and not any("calendars" in observation for observation in observations)
+        )
+
+    def _request_approval(self, run: _Run, plan: Plan) -> None:
+        action = plan.action
+        owner_approves = isinstance(action, UpdateInstructions)
+        run.job = run.job.transition(
+            JobStatus.AWAITING_APPROVAL,
+            plan_json=plan.model_dump_json(),
+            approval_expires_at=None,
+            approval_user_id=self.settings.kaggle_owner_user_id if owner_approves else None,
+        )
+        if isinstance(action, CreateMeeting):
+            description = meeting_preview(action)
+        else:
+            preview = json.dumps(
+                action.model_dump(mode="json"), ensure_ascii=False, indent=2
+            ).replace("`", "\\u0060")
+            description = f"以下の操作を承認しますか？\n\n```json\n{preview}\n```"
+        if owner_approves:
+            description = (
+                f"<@{self.settings.kaggle_owner_user_id}> 変更案の承認をお願いします。"
+                "承認する場合はこのメッセージに 👍 を付けてね。\n\n" + description
+            )
+        self.jobs.notify(run.job, description, outcome="awaiting_approval")
 
     def _recover_input(
         self,
@@ -329,8 +347,8 @@ class ProcessJobUseCase:
         observations.append(feedback)
         return True
 
-    def _ignore(self, job: Job, outcome: str, error_code: str | None = None) -> None:
-        self.jobs.finish_silently(job.transition(JobStatus.IGNORED, error_code=error_code), outcome)
+    def _conversation(self, job: Job) -> tuple[str, str]:
+        return self._thread_at_message(job), self.jobs.context(job.message.source)
 
     def _thread_at_message(self, job: Job) -> str:
         thread = self.messenger.thread(job.message.source)

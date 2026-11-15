@@ -1,13 +1,13 @@
 import hashlib
 import html
 from typing import cast
-from zoneinfo import ZoneInfo
 
 from modules.interaction.application.ports.announcements import AnnouncementSender
 from modules.interaction.application.ports.retro_documents import RetroDocuments
 from modules.interaction.domain.meetings import MeetingReceipt, MeetingRepository
 from modules.planning.public import CreateMeeting, MeetingAnnouncement
 from modules.scheduling.public import CreateEvent, SchedulingService
+from shared.domain.timezone import JST
 from shared.errors import AgentError, UncertainWrite
 
 
@@ -106,9 +106,31 @@ class MeetingService:
         text = announcement_text(action.announcement, users)
         if not url:
             return text
-        day = action.event.draft.period.start.astimezone(ZoneInfo("Asia/Tokyo"))
+        day = action.event.draft.period.start.astimezone(JST)
         label = html.escape(f"[Retro & Planning] {day:%Y/%m/%d}", quote=False)
         return text + f"\nレトプラのドキュメント: <{html.escape(url, quote=False)}|{label}>"
+
+    def _create_document(self, action: CreateMeeting, receipt: MeetingReceipt) -> MeetingReceipt:
+        """レトプラ文書を作成して記録し、テンプレートの反映まで確認する。"""
+        if self.receipts is None or self.retro_documents is None:
+            raise AgentError("retro_configuration", "レトプラのNotion設定を確認してね。")
+        day = action.event.draft.period.start.astimezone(JST).date()
+        page_id, url = self.retro_documents.create(day, action.retro_user_ids)
+        receipt = receipt.model_copy(
+            update={"document_id": page_id, "document_url": url, "phase": "document_created"}
+        )
+        self.receipts.save_meeting(receipt)
+        try:
+            ready = self.retro_documents.ready(page_id, day, action.retro_user_ids)
+        except AgentError:
+            ready = False
+        if not ready:
+            raise AgentError(
+                "retro_document_incomplete",
+                "Notionページを作成したけどテンプレートの反映を確認できなかったよ。"
+                f"予定とSlackは未作成なので、ページを確認してね: {url}",
+            )
+        return receipt
 
     def execute(self, action: CreateMeeting, key: str) -> dict[str, object]:
         if self.receipts is None or self.sender is None:
@@ -139,24 +161,7 @@ class MeetingService:
                 "meeting_changed", "承認後に操作内容が変わりました。再度依頼してください。"
             )
         if action.retro_planning:
-            if self.retro_documents is None:
-                raise AgentError("retro_configuration", "レトプラのNotion設定を確認してね。")
-            day = action.event.draft.period.start.astimezone(ZoneInfo("Asia/Tokyo")).date()
-            page_id, url = self.retro_documents.create(day, action.retro_user_ids)
-            receipt = receipt.model_copy(
-                update={"document_id": page_id, "document_url": url, "phase": "document_created"}
-            )
-            self.receipts.save_meeting(receipt)
-            try:
-                ready = self.retro_documents.ready(page_id, day, action.retro_user_ids)
-            except AgentError:
-                ready = False
-            if not ready:
-                raise AgentError(
-                    "retro_document_incomplete",
-                    "Notionページを作成したけどテンプレートの反映を確認できなかったよ。"
-                    f"予定とSlackは未作成なので、ページを確認してね: {url}",
-                )
+            receipt = self._create_document(action, receipt)
         event_action = self._linked_event(action, receipt.document_url)
         try:
             result = self.scheduling.execute(event_action, key)
@@ -228,8 +233,8 @@ class MeetingService:
 def meeting_preview(action: CreateMeeting) -> str:
     event = action.event
     period = event.draft.period
-    start = period.start.astimezone(ZoneInfo("Asia/Tokyo"))
-    end = period.end.astimezone(ZoneInfo("Asia/Tokyo"))
+    start = period.start.astimezone(JST)
+    end = period.end.astimezone(JST)
     label = event.draft.label
     label_text = (
         f"{html.escape(label.name or '名前なし', quote=False)} ({label.background_color})"
