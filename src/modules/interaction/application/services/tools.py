@@ -165,27 +165,31 @@ class ToolRegistry:
             if name not in registered or not permission.actions <= registered[name].actions:
                 raise ValueError(f"未登録のPythonツール・操作を指定した設定: {name}")
 
-    def prepare(self, action: Action, source: Source) -> None:
+    def _tool(self, action: Action, message: str) -> PythonTool:
         if not self.skillbook.permits(action.kind) or action.kind not in self.tools:
-            raise AgentError("forbidden_tool", "このPythonツールの操作は設定で許可されていません。")
-        self.tools[action.kind].prepare(action, source)
+            raise AgentError("forbidden_tool", message)
+        return self.tools[action.kind]
+
+    def _require_meeting_permissions(self, action: Action) -> None:
+        """会議作成は予定作成と（振り返り文書つきなら）Notion作成の許可も必要とする。"""
+        if not isinstance(action, CreateMeeting):
+            return
+        if not self.skillbook.permits("calendar.create"):
+            raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
+        if action.retro_planning and not self.skillbook.permits("notion.create"):
+            raise AgentError("forbidden_tool", "Notion作成がツール設定で許可されていません。")
+
+    def prepare(self, action: Action, source: Source) -> None:
+        tool = self._tool(action, "このPythonツールの操作は設定で許可されていません。")
+        tool.prepare(action, source)
+        self._require_meeting_permissions(action)
 
     def execute(
         self, action: Action, source_url: str, key: str, *, source: Source | None = None
     ) -> dict[str, Any]:
-        if not self.skillbook.permits(action.kind) or action.kind not in self.tools:
-            raise AgentError("forbidden_tool", "このPythonツールの操作は設定で許可されていません。")
-        if isinstance(action, CreateMeeting) and not self.skillbook.permits("calendar.create"):
-            raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
-        if (
-            isinstance(action, CreateMeeting)
-            and action.retro_planning
-            and not self.skillbook.permits("notion.create")
-        ):
-            raise AgentError("forbidden_tool", "Notion作成がツール設定で許可されていません。")
-        return self.tools[action.kind].execute(action, source_url, key, source=source)
+        tool = self._tool(action, "このPythonツールの操作は設定で許可されていません。")
+        self._require_meeting_permissions(action)
+        return tool.execute(action, source_url, key, source=source)
 
     def reconcile(self, action: Action, key: str) -> dict[str, Any] | None:
-        if not self.skillbook.permits(action.kind) or action.kind not in self.tools:
-            raise AgentError("forbidden_tool", "照合対象のツールが無効です。")
-        return self.tools[action.kind].reconcile(action, key)
+        return self._tool(action, "照合対象のツールが無効です。").reconcile(action, key)

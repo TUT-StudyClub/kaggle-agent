@@ -1,8 +1,6 @@
-import re
-
 from modules.interaction.application.policies.access import AgentPolicy
 from modules.interaction.application.ports.messenger import Messenger
-from modules.interaction.domain.approval import is_approval_reply
+from modules.interaction.domain.approval import approval_job_id, is_approval_reply
 from modules.interaction.domain.models import (
     IncomingMessage,
 )
@@ -42,9 +40,9 @@ class ReceiveMessageUseCase:
             # 承認待ちの場合はワーカーで発言者と承認意思を確認する。
             job = self.jobs.enqueue(message)
             return job.id if job else None
-        approval = re.fullmatch(r"承認\s+([a-f0-9]{32})", message.text.strip())
-        if approval:
-            if not self.jobs.approve(approval[1], source, self.clock.timestamp()):
+        approval_id = approval_job_id(message.text)
+        if approval_id:
+            if not self.jobs.approve(approval_id, source, self.clock.timestamp()):
                 self.messenger.send(
                     source, "承認できません。対象・利用者・スレッド・有効期限を確認してください。"
                 )
@@ -65,6 +63,4 @@ class ReceiveMessageUseCase:
             )
             return None
         job = self.jobs.enqueue(message)
-        if job:
-            return job.id
-        return None
+        return job.id if job else None

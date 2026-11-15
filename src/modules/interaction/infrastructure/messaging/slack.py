@@ -1,6 +1,7 @@
 import hashlib
 import json
 import time
+from typing import Any, Literal
 
 from pydantic import ValidationError
 from slack_sdk import WebClient
@@ -108,53 +109,12 @@ class SlackMessenger(Messenger):
         if delivery is not None:
             if delivery.source != source or delivery.text_digest != digest:
                 raise AgentError("delivery_mismatch", "返信の送信先・内容が一致しません。")
-            if delivery.state == "done":
-                return
-            if delivery.message_ts is None:
-                # 開始リクエストの結果が不明なら、新規メッセージを自動作成しない。
-                raise AgentError(
-                    "slack_delivery_uncertain", "Slackの返信開始結果を確認してください。"
-                )
-            try:
-                self._stop(source, delivery.message_ts)
-                # 追記が届いたか不明な場合も、同じ返信を検証済みの全文で置き換える。
-                self.client.chat_update(
-                    channel=source.channel_id, ts=delivery.message_ts, **message_payload(text)
-                )
-            except SlackClientError, OSError:
-                raise AgentError("slack_stream_repair", "Slackの返信を復旧できません。") from None
-            store.save_delivery(delivery.model_copy(update={"state": "done"}))
+            self._repair_reply(delivery, text, store)
             return
         delivery = ReplyDelivery(id=notification_id, source=source, text_digest=digest)
         store.save_delivery(delivery)
         try:
-            try:
-                started = self.client.chat_startStream(
-                    channel=source.channel_id,
-                    thread_ts=source.thread_ts,
-                    recipient_team_id=source.team_id,
-                    recipient_user_id=source.user_id,
-                    markdown_text=text[:512],
-                )
-            except SlackApiError as error:
-                code = error.response.get("error")
-                if code in {"internal_error", "fatal_error"}:
-                    raise
-                if code in {
-                    "missing_scope",
-                    "method_not_supported_for_channel_type",
-                    "not_allowed_token_type",
-                    "unknown_method",
-                    "feature_not_enabled",
-                }:
-                    started = self._post(source, text)
-                    state = "done"
-                else:
-                    # Slackが明示的に拒否した場合だけ、開始を再試行できる状態へ戻す。
-                    store.forget_delivery(notification_id)
-                    raise
-            else:
-                state = "open"
+            started, state = self._start_reply(notification_id, source, text, store)
             message_ts = started.get("ts")
             if not isinstance(message_ts, str):
                 raise AgentError("slack_delivery_uncertain", "Slackの返信IDを確認できません。")
@@ -188,6 +148,53 @@ class SlackMessenger(Messenger):
         except SlackClientError, OSError:
             # TSが得られたストリームは次回に同じ返信を修復する。別投稿にフォールバックしない。
             raise AgentError("slack_stream", "Slackへの返信送信が中断しました。") from None
+
+    def _repair_reply(self, delivery: ReplyDelivery, text: str, store: DeliveryRepository) -> None:
+        """前回中断した返信を、同じメッセージの上書きで完了させる。"""
+        if delivery.state == "done":
+            return
+        if delivery.message_ts is None:
+            # 開始リクエストの結果が不明なら、新規メッセージを自動作成しない。
+            raise AgentError("slack_delivery_uncertain", "Slackの返信開始結果を確認してください。")
+        source = delivery.source
+        try:
+            self._stop(source, delivery.message_ts)
+            # 追記が届いたか不明な場合も、同じ返信を検証済みの全文で置き換える。
+            self.client.chat_update(
+                channel=source.channel_id, ts=delivery.message_ts, **message_payload(text)
+            )
+        except SlackClientError, OSError:
+            raise AgentError("slack_stream_repair", "Slackの返信を復旧できません。") from None
+        store.save_delivery(delivery.model_copy(update={"state": "done"}))
+
+    def _start_reply(
+        self, notification_id: str, source: Source, text: str, store: DeliveryRepository
+    ) -> tuple[Any, Literal["open", "done"]]:
+        """返信のストリームを開始する。ストリーム非対応の場所では通常投稿で完了させる。"""
+        try:
+            started = self.client.chat_startStream(
+                channel=source.channel_id,
+                thread_ts=source.thread_ts,
+                recipient_team_id=source.team_id,
+                recipient_user_id=source.user_id,
+                markdown_text=text[:512],
+            )
+        except SlackApiError as error:
+            code = error.response.get("error")
+            if code in {"internal_error", "fatal_error"}:
+                raise
+            if code in {
+                "missing_scope",
+                "method_not_supported_for_channel_type",
+                "not_allowed_token_type",
+                "unknown_method",
+                "feature_not_enabled",
+            }:
+                return self._post(source, text), "done"
+            # Slackが明示的に拒否した場合だけ、開始を再試行できる状態へ戻す。
+            store.forget_delivery(notification_id)
+            raise
+        return started, "open"
 
     def _deliver_approval(
         self,

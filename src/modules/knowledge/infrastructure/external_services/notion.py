@@ -5,6 +5,7 @@ from modules.knowledge.domain.models import Note, Page
 from modules.knowledge.domain.repositories import KnowledgeRepository
 from shared.errors import AgentError, UncertainWrite
 from shared.infrastructure.http import JsonHttp
+from shared.infrastructure.notion import plain_text
 
 
 def notion_id(value: str) -> str:
@@ -15,11 +16,7 @@ def notion_id(value: str) -> str:
 
 
 def plain(block: dict) -> str:
-    content = block.get(block.get("type", ""), {})
-    return "".join(
-        t.get("plain_text", t.get("text", {}).get("content", ""))
-        for t in content.get("rich_text", [])
-    )
+    return plain_text(block.get(block.get("type", ""), {}).get("rich_text", []))
 
 
 def rich_text(text: str) -> list[dict]:
@@ -79,10 +76,9 @@ class NotionRepository(KnowledgeRepository):
 
     def _model(self, raw: dict, text: str = "") -> Page:
         title = "".join(
-            t.get("plain_text", t.get("text", {}).get("content", ""))
+            plain_text(prop.get("title", []))
             for prop in raw.get("properties", {}).values()
             if prop.get("type") == "title"
-            for t in prop.get("title", [])
         )
         if raw.get("object") == "data_source":
             title = "".join(t.get("plain_text", "") for t in raw.get("title", []))

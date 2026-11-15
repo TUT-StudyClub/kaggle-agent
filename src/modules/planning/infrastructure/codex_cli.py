@@ -220,61 +220,63 @@ class CodexCLIPlanner(Planner):
             schema.write_text(
                 json.dumps(strict_schema(result_type.model_json_schema())), encoding="utf-8"
             )
+            command = self._command(
+                schema, output, instructions=instructions, web_search=web_search
+            )
+            stdout = self._execute(command, root, planning_input(request))
             try:
-                with subprocess.Popen(
-                    self._command(schema, output, instructions=instructions, web_search=web_search),
-                    cwd=root,
-                    env=child_environment(),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=True,
-                ) as process:
-                    try:
-                        stdout, stderr = process.communicate(
-                            planning_input(request),
-                            timeout=self.timeout_seconds,
-                        )
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.communicate()
-                        raise AgentError("ai_timeout", "AIの応答が時間切れになりました。") from None
-                    if process.returncode:
-                        # 生のstderrには認証情報や本文が含まれ得るため公開・ログ保存しない。
-                        self.stopped = True
-                        combined = (stdout + stderr).lower()
-                        code = (
-                            "ai_limit"
-                            if any(
-                                word in combined
-                                for word in ("usage limit", "rate limit", "quota", "credits")
-                            )
-                            else "ai_unavailable"
-                        )
-                        raise AgentError(
-                            code, "AIを停止しました。Codexの認証・利用枠を確認してください。"
-                        )
-            except OSError:
-                raise AgentError("codex_missing", "Codex CLIを起動できません。") from None
-            try:
-                for line in stdout.splitlines():
-                    event = json.loads(line)
-                    item = event.get("item", {})
-                    if event.get("type") in {"error", "turn.failed"}:
-                        raise ValueError("failed turn")
-                    if item.get("type") in {
-                        "command_execution",
-                        "mcp_tool_call",
-                        "file_change",
-                    }:
-                        raise ValueError("unexpected tool call")
-                    if item.get("type") == "web_search" and web_search == "disabled":
-                        raise ValueError("web search is disabled")
-                    if event.get("type") == "item.completed" and item.get("type") == "web_search":
-                        self.last_web_searches.append(item.get("action", {}))
+                self._inspect_events(stdout, web_search)
                 return result_type.model_validate_json(output.read_text(encoding="utf-8"))
             except OSError, ValueError, ValidationError:
                 raise AgentError(
                     "ai_invalid_output", "AIの操作案を検証できませんでした。"
                 ) from None
+
+    def _execute(self, command: list[str], cwd: Path, prompt: str) -> str:
+        """Codex CLIを独立したプロセスグループで実行し、イベントのJSON Linesを返す。"""
+        try:
+            with subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=child_environment(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(prompt, timeout=self.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+                    raise AgentError("ai_timeout", "AIの応答が時間切れになりました。") from None
+                if process.returncode:
+                    # 生のstderrには認証情報や本文が含まれ得るため公開・ログ保存しない。
+                    self.stopped = True
+                    combined = (stdout + stderr).lower()
+                    limited = any(
+                        word in combined
+                        for word in ("usage limit", "rate limit", "quota", "credits")
+                    )
+                    raise AgentError(
+                        "ai_limit" if limited else "ai_unavailable",
+                        "AIを停止しました。Codexの認証・利用枠を確認してください。",
+                    )
+        except OSError:
+            raise AgentError("codex_missing", "Codex CLIを起動できません。") from None
+        return stdout
+
+    def _inspect_events(self, stdout: str, web_search: str) -> None:
+        """許可していないツール呼び出しや失敗したターンを ValueError で拒否する。"""
+        for line in stdout.splitlines():
+            event = json.loads(line)
+            item = event.get("item", {})
+            if event.get("type") in {"error", "turn.failed"}:
+                raise ValueError("failed turn")
+            if item.get("type") in {"command_execution", "mcp_tool_call", "file_change"}:
+                raise ValueError("unexpected tool call")
+            if item.get("type") == "web_search" and web_search == "disabled":
+                raise ValueError("web search is disabled")
+            if event.get("type") == "item.completed" and item.get("type") == "web_search":
+                self.last_web_searches.append(item.get("action", {}))

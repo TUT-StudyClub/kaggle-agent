@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from shared.errors import AgentError
 from shared.infrastructure.http import JsonHttp
+from shared.infrastructure.notion import is_removed, plain_text
 
 from ...application.dto.task_board import TaskBoardConfig
 from ...domain.tasks import BoardTask, TaskBoardRepository, TaskMember, TaskPerson
@@ -13,10 +14,7 @@ JST = ZoneInfo("Asia/Tokyo")
 
 
 def text_value(prop: dict) -> str:
-    return "".join(
-        part.get("plain_text", part.get("text", {}).get("content", ""))
-        for part in prop.get(prop.get("type", ""), [])
-    ).strip()
+    return plain_text(prop.get(prop.get("type", ""), [])).strip()
 
 
 class NotionTaskBoard(TaskBoardRepository):
@@ -56,6 +54,19 @@ class NotionTaskBoard(TaskBoardRepository):
             "task_board_incomplete", "タスク通知のNotionデータを最後まで取得できません。"
         )
 
+    def _open_rows(self, conditions: list[dict]) -> list[dict]:
+        """指定した条件に合い、除外ステータスではないタスクの行を取得する。"""
+        c = self.config
+        excluded = [
+            {"property": c.status_property, "status": {"does_not_equal": status}}
+            for status in sorted(c.excluded_statuses)
+        ]
+        return self._pages(
+            f"data_sources/{c.data_source_id}/query",
+            query=True,
+            payload={"filter": {"and": [*conditions, *excluded]}},
+        )
+
     def tasks_on(self, day: date) -> list[BoardTask]:
         c = self.config
         self._schema(
@@ -77,17 +88,8 @@ class NotionTaskBoard(TaskBoardRepository):
                 "property": c.date_property,
                 "date": {"before": (day + timedelta(days=2)).isoformat()},
             },
-            *(
-                {"property": c.status_property, "status": {"does_not_equal": status}}
-                for status in sorted(c.excluded_statuses)
-            ),
         ]
-        rows = self._pages(
-            f"data_sources/{c.data_source_id}/query",
-            query=True,
-            payload={"filter": {"and": conditions}},
-        )
-        return self._tasks(rows, day=day)
+        return self._tasks(self._open_rows(conditions), day=day)
 
     def overdue_tasks(self) -> list[BoardTask]:
         c = self.config
@@ -107,24 +109,15 @@ class NotionTaskBoard(TaskBoardRepository):
                 "property": c.overdue_alert_property,
                 "formula": {"string": {"equals": c.overdue_alert_value}},
             },
-            *(
-                {"property": c.status_property, "status": {"does_not_equal": status}}
-                for status in sorted(c.excluded_statuses)
-            ),
         ]
-        rows = self._pages(
-            f"data_sources/{c.data_source_id}/query",
-            query=True,
-            payload={"filter": {"and": conditions}},
-        )
-        return self._tasks(rows)
+        return self._tasks(self._open_rows(conditions))
 
     def _tasks(self, rows: list[dict], *, day: date | None = None) -> list[BoardTask]:
         c = self.config
         tasks = []
         users: dict[str, TaskPerson] = {}
         for row in rows:
-            if row.get("archived") or row.get("in_trash") or row.get("is_archived"):
+            if is_removed(row):
                 continue
             props = row["properties"]
             status = props[c.status_property].get("status") or {}
@@ -200,7 +193,7 @@ class NotionTaskBoard(TaskBoardRepository):
             )
         result = []
         for row in self._pages(f"data_sources/{source}/query", query=True):
-            if row.get("archived") or row.get("in_trash") or row.get("is_archived"):
+            if is_removed(row):
                 continue
             props = row["properties"]
             emails = text_value(props.get("Calendar Emails", {}))

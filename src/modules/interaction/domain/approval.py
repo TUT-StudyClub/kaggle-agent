@@ -55,3 +55,9 @@ def is_approval_reply(text: str) -> bool:
         "それでいいよ",
         "それでお願いします",
     }
+
+
+def approval_job_id(text: str) -> str | None:
+    """「承認 <ジョブID>」形式の明示的な承認から、対象のジョブIDを取り出す。"""
+    match = re.fullmatch(r"承認\s+([a-f0-9]{32})", text.strip())
+    return match[1] if match else None

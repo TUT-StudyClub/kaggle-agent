@@ -61,29 +61,21 @@ class ActionService:
             else Activity.CALENDAR
         )
         self.activity.update(job.message.source, activity)
-        if action.kind.startswith("notion."):
-            result = self.tools.execute(
-                action,
-                self.messenger.permalink(job.message.source),
-                job.id,
-                source=job.message.source,
-            )
-            if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
-                page = result.get("page")
-                if isinstance(page, dict):
-                    self.jobs.map_page(job.message.source.thread_key, str(page["id"]))
-            return result
-        return self.tools.execute(action, "", job.id, source=job.message.source)
+        source = job.message.source
+        if not action.kind.startswith("notion."):
+            return self.tools.execute(action, "", job.id, source=source)
+        result = self.tools.execute(action, self.messenger.permalink(source), job.id, source=source)
+        if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
+            page = result.get("page")
+            if isinstance(page, dict):
+                self.jobs.map_page(source.thread_key, str(page["id"]))
+        return result
 
     def prepare(self, job: Job, plan: Plan) -> Plan:
         action = plan.action
         self._authorize(job, plan)
         self.tools.prepare(action, job.message.source)
         if isinstance(action, CreateMeeting):
-            if not self.tools.skillbook.permits("calendar.create"):
-                raise AgentError("forbidden_tool", "予定作成がツール設定で許可されていません。")
-            if action.retro_planning and not self.tools.skillbook.permits("notion.create"):
-                raise AgentError("forbidden_tool", "Notion作成がツール設定で許可されていません。")
             action = self.meetings.prepare(action)
         if isinstance(action, (CreatePage, AppendPage)) and action.record_thread:
             mapped = self.jobs.mapping(job.message.source.thread_key)
