@@ -4,10 +4,11 @@ from html import escape
 
 from modules.interaction.application.dto.reminders import DailyScheduleReminder
 from modules.interaction.application.ports.reminders import ReminderSender
-from modules.interaction.application.services.daily_reminder import JST, DailyReminder
+from modules.interaction.application.services.daily_reminder import DailyReminder
 from modules.interaction.domain.reminders import ReminderRepository
 from modules.scheduling.public import Event, SchedulingService, TimeRange
 from shared.application.ports.clock import Clock
+from shared.domain.timezone import JST
 from shared.errors import AgentError
 
 logger = logging.getLogger(__name__)

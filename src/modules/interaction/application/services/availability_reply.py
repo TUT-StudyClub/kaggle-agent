@@ -1,9 +1,8 @@
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from modules.scheduling.public import AvailabilityResult
+from shared.domain.timezone import JST
 
-JST = ZoneInfo("Asia/Tokyo")
 WEEKDAYS = "月火水木金土日"
 
 

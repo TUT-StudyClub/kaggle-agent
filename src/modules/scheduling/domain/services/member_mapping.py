@@ -12,6 +12,26 @@ def ensure_unique_members(members: list[CalendarMember]) -> None:
         )
 
 
+def email_owners(members: list[CalendarMember], *, require_all: bool = False) -> dict[str, str]:
+    """Calendar Emails から Slack ユーザーIDへの対応表。同じメールが複数人にあれば拒否する。
+
+    require_all を指定すると、メール未登録のメンバーがいる場合も拒否する。
+    """
+    emails: dict[str, str] = {}
+    for member in members:
+        if require_all and not member.calendar_emails:
+            raise AgentError(
+                "participant_directory_missing", "Member DBのCalendar Emailsを登録してください。"
+            )
+        for email in member.calendar_emails:
+            if email in emails and emails[email] != member.slack_user_id:
+                raise AgentError(
+                    "participant_mapping_conflict", "Calendar Emailsが複数人に登録されています。"
+                )
+            emails[email] = member.slack_user_id
+    return emails
+
+
 def resolve_label(mapping: dict[str, str], slack_user_id: str, label_id: str | None) -> str:
     resolved = next((label for label, user in mapping.items() if user == slack_user_id), None)
     if resolved is None:
@@ -36,18 +56,7 @@ def resolve_event_participants(
         raise AgentError(
             "calendar_participants_incomplete", "予定の主催者・招待ゲストの全件を確認できません。"
         )
-    emails: dict[str, str] = {}
-    for member in members:
-        if not member.calendar_emails:
-            raise AgentError(
-                "participant_directory_missing", "Member DBのCalendar Emailsを登録してください。"
-            )
-        for email in member.calendar_emails:
-            if email in emails and emails[email] != member.slack_user_id:
-                raise AgentError(
-                    "participant_mapping_conflict", "Calendar Emailsが複数人に登録されています。"
-                )
-            emails[email] = member.slack_user_id
+    emails = email_owners(members, require_all=True)
     participants = {email.strip().lower() for email in event.guest_emails}
     participants.add(host.strip().lower())
     if not participants <= emails.keys():

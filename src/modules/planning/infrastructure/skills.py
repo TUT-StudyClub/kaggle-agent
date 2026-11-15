@@ -44,10 +44,14 @@ def load_skillbook(
     rules_root = rules_root or (resources if bundled_policy.exists() else project) / "rules"
     with policy_path.open("rb") as stream:
         policy = ToolPolicy.model_validate(tomllib.load(stream))
-    enabled_skills = {tool.skill for tool in policy.tools.values() if tool.enabled}
+
+    def rule(name: str) -> str:
+        return (rules_root / f"{name}.md").read_text(encoding="utf-8").strip()
+
+    tool_skills = {tool.skill for tool in policy.tools.values() if tool.enabled}
     # ツールを持たない独立スキルも読み込む。
     configured_skills = {tool.skill for tool in policy.tools.values()}
-    enabled_skills |= {
+    independent_skills = {
         path.parent.name
         for path in skills_root.glob("*/SKILL.md")
         if path.parent.name not in configured_skills
@@ -55,21 +59,17 @@ def load_skillbook(
     skills = tuple(
         read_skill(
             skills_root / name / "SKILL.md",
-            rules=(rules_root / f"{name}.md").read_text(encoding="utf-8").strip()
-            if (rules_root / f"{name}.md").exists()
-            or name in {tool.skill for tool in policy.tools.values() if tool.enabled}
+            # ツールに紐づくスキルはルール必須。独立スキルはルールがなければ共通ルールに従う。
+            rules=rule(name)
+            if (rules_root / f"{name}.md").exists() or name in tool_skills
             else "共通ルールに従います。",
         )
-        for name in sorted(enabled_skills)
+        for name in sorted(tool_skills | independent_skills)
     )
     return SkillBook(
-        rules=(rules_root / "common.md").read_text(encoding="utf-8").strip(),
-        response_rules=(rules_root / "response.md").read_text(encoding="utf-8").strip(),
+        rules=rule("common"),
+        response_rules=rule("response"),
         skills=skills,
         policy=policy,
-        research_rules=(
-            (rules_root / "research.md").read_text(encoding="utf-8").strip()
-            if policy.web_search != "disabled"
-            else ""
-        ),
+        research_rules=rule("research") if policy.web_search != "disabled" else "",
     )

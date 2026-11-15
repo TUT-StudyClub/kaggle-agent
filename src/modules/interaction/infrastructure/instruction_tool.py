@@ -52,49 +52,71 @@ class InstructionTool(PythonTool):
         if not action.content.strip():
             raise AgentError("instruction_invalid", "空の内容には変更できないよ。")
         if action.path.startswith("skills/"):
-            lines = action.content.splitlines(keepends=True)
+            self._validate_skill(path, action.content)
+
+    @staticmethod
+    def _validate_skill(path: Path, content: str) -> None:
+        """スキルには、ディレクトリ名と一致する name・description と本文を必須とする。"""
+        lines = content.splitlines(keepends=True)
+        try:
+            if not lines or lines[0].strip() != "---":
+                raise ValueError
+            end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+            data = yaml.safe_load("".join(lines[1:end]))
+            if (
+                not isinstance(data, dict)
+                or set(data) != {"name", "description"}
+                or data["name"] != path.parent.name
+                or len(path.parent.name) > 64
+                or not isinstance(data["description"], str)
+                or not data["description"].strip()
+                or not "".join(lines[end + 1 :]).strip()
+            ):
+                raise ValueError
+        except ValueError, StopIteration, yaml.YAMLError:
+            raise AgentError("instruction_invalid", "スキルの形式を確認してね。") from None
+
+    def _files(self) -> list[dict[str, str]]:
+        paths = sorted((self.root / "rules").glob("*.md")) + sorted(
+            (self.root / "skills").glob("*/SKILL.md")
+        )
+        files = []
+        for path in paths:
+            relative = str(path.relative_to(self.root))
             try:
-                if not lines or lines[0].strip() != "---":
-                    raise ValueError
-                end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
-                data = yaml.safe_load("".join(lines[1:end]))
-                if (
-                    not isinstance(data, dict)
-                    or set(data) != {"name", "description"}
-                    or data["name"] != path.parent.name
-                    or len(path.parent.name) > 64
-                    or not isinstance(data["description"], str)
-                    or not data["description"].strip()
-                    or not "".join(lines[end + 1 :]).strip()
-                ):
-                    raise ValueError
-            except ValueError, StopIteration, yaml.YAMLError:
-                raise AgentError("instruction_invalid", "スキルの形式を確認してね。") from None
+                content = self._current(self._path(relative))
+            except AgentError, OSError, UnicodeError:
+                continue
+            if content is not None:
+                files.append(
+                    {
+                        "path": relative,
+                        "content": content,
+                        "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                    }
+                )
+        return files
+
+    @staticmethod
+    def _replace(path: Path, content: str) -> None:
+        """同じディレクトリの一時ファイルへ書き切ってから置き換え、途中の内容を見せない。"""
+        path.parent.mkdir(exist_ok=True)
+        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".instruction-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
 
     def execute(
         self, action: Action, source_url: str, key: str, *, source: Source | None = None
     ) -> dict:
         if isinstance(action, ReadInstructions):
-            paths = sorted((self.root / "rules").glob("*.md")) + sorted(
-                (self.root / "skills").glob("*/SKILL.md")
-            )
-            files = []
-            for path in paths:
-                relative = str(path.relative_to(self.root))
-                try:
-                    path = self._path(relative)
-                    content = self._current(path)
-                except AgentError, OSError, UnicodeError:
-                    continue
-                if content is not None:
-                    files.append(
-                        {
-                            "path": relative,
-                            "content": content,
-                            "sha256": hashlib.sha256(content.encode()).hexdigest(),
-                        }
-                    )
-            return {"files": files}
+            return {"files": self._files()}
         if not isinstance(action, UpdateInstructions) or source is None:
             raise AgentError("instruction_invalid", "変更内容を確認できなかったよ。")
         lock_dir = self.root / "var"
@@ -102,18 +124,7 @@ class InstructionTool(PythonTool):
         with (lock_dir / "instruction-update.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             self.prepare(action, source)
-            path = self._path(action.path)
-            path.parent.mkdir(exist_ok=True)
-            fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".instruction-")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(action.content)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temp, path)
-            finally:
-                if os.path.exists(temp):
-                    os.unlink(temp)
+            self._replace(self._path(action.path), action.content)
         return {"updated": action.path}
 
     def reconcile(self, action: Action, key: str) -> dict | None:

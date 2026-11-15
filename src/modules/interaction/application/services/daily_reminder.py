@@ -2,14 +2,12 @@ import hashlib
 import logging
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 
 from modules.interaction.application.ports.reminders import ReminderSender
 from modules.interaction.domain.reminders import ReminderRepository
 from shared.application.ports.clock import Clock
+from shared.domain.timezone import JST
 from shared.errors import AgentError, UncertainWrite
-
-JST = ZoneInfo("Asia/Tokyo")
 
 
 class DailyReminder(ABC):

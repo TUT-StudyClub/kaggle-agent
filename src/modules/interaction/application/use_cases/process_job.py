@@ -1,6 +1,5 @@
 import json
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -36,9 +35,8 @@ from modules.scheduling.public import (
     SchedulingService,
 )
 from shared.application.ports.clock import Clock
+from shared.domain.timezone import JST
 from shared.errors import AgentError
-
-JST = ZoneInfo("Asia/Tokyo")
 
 
 class _Run(BaseModel):

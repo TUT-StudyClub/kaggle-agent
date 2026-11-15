@@ -42,6 +42,25 @@ class SocketHealth:
         return time.time() - last_pong >= self.timeout
 
 
+def _announce(settings: Settings) -> None:
+    print(
+        "Slack Socket Modeに接続しました。許可されたDM・メンションを待機しています。",
+        flush=True,
+    )
+    if reminder := settings.daily_schedule_reminder:
+        print(
+            f"チーム予定の定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
+            f" / {reminder.calendar_alias} → {reminder.channel_id}",
+            flush=True,
+        )
+    if reminder := settings.daily_task_reminder:
+        print(
+            f"タスクの定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
+            f" → {reminder.channel_id}",
+            flush=True,
+        )
+
+
 def run(settings: Settings) -> None:
     clock = build_clock()
     settings.database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -87,22 +106,7 @@ def run(settings: Settings) -> None:
             thread.start()
             if reminder_thread is not None:
                 reminder_thread.start()
-            print(
-                "Slack Socket Modeに接続しました。許可されたDM・メンションを待機しています。",
-                flush=True,
-            )
-            if reminder := settings.daily_schedule_reminder:
-                print(
-                    f"チーム予定の定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
-                    f" / {reminder.calendar_alias} → {reminder.channel_id}",
-                    flush=True,
-                )
-            if reminder := settings.daily_task_reminder:
-                print(
-                    f"タスクの定期通知: 毎日{reminder.hour:02}:{reminder.minute:02}（日本時間）"
-                    f" → {reminder.channel_id}",
-                    flush=True,
-                )
+            _announce(settings)
             health = SocketHealth()
             while not stop.wait(15):
                 if health.failed(handler.client):

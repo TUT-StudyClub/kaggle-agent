@@ -1,9 +1,9 @@
 import re
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
+from shared.domain.timezone import JST
 from shared.domain.value_object import ValueObject
 
 
@@ -82,7 +82,7 @@ class Event(ValueObject):
         def local(value: str) -> datetime:
             parsed = datetime.fromisoformat(value)
             if "T" not in value:
-                return parsed.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+                return parsed.replace(tzinfo=JST)
             if parsed.tzinfo is None:
                 raise ValueError("予定の時刻にタイムゾーンがありません")
             return parsed

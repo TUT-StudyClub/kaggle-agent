@@ -1,6 +1,9 @@
 from modules.scheduling.domain.models import CalendarMember, Event
 from modules.scheduling.domain.repositories import MemberDirectory
-from modules.scheduling.domain.services.member_mapping import ensure_unique_members
+from modules.scheduling.domain.services.member_mapping import (
+    email_owners,
+    ensure_unique_members,
+)
 from shared.errors import AgentError
 
 from ..dto.commands import CreateEvent
@@ -94,15 +97,7 @@ class MemberMappingService:
             raise AgentError(
                 "participant_directory_missing", "参加者の対応をMember DBに設定してください。"
             )
-        emails = {}
-        for member in members:
-            for email in member.calendar_emails:
-                if email in emails and emails[email] != member.slack_user_id:
-                    raise AgentError(
-                        "participant_mapping_conflict",
-                        "Calendar Emailsが複数人に登録されています。",
-                    )
-                emails[email] = member.slack_user_id
+        emails = email_owners(members)
         result = {}
         for event in events:
             if (

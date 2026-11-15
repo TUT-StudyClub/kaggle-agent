@@ -2,6 +2,7 @@ import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from shared.domain.timezone import JST
 from shared.errors import AgentError
 from shared.infrastructure.http import JsonHttp
 from shared.infrastructure.notion import is_removed, plain_text
@@ -9,8 +10,6 @@ from shared.infrastructure.notion import is_removed, plain_text
 from ...application.dto.task_board import TaskBoardConfig
 from ...domain.tasks import BoardTask, TaskBoardRepository, TaskMember, TaskPerson
 from .notion import notion_id
-
-JST = ZoneInfo("Asia/Tokyo")
 
 
 def text_value(prop: dict) -> str:

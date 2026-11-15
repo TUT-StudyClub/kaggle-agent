@@ -1,8 +1,7 @@
-from zoneinfo import ZoneInfo
-
 from modules.planning.application.dto.planning import PlanningRequest
 from modules.planning.application.ports.planner import Planner
 from shared.application.ports.clock import Clock
+from shared.domain.timezone import JST
 from shared.errors import AgentError
 
 
@@ -16,7 +15,7 @@ class ProbePlanningUseCase:
         plan = self._planner.plan(
             PlanningRequest(
                 instruction="検証です。replyで『接続確認』とだけ返してください。ツールは使用しません。",
-                now=self._clock.now().astimezone(ZoneInfo("Asia/Tokyo")).isoformat(),
+                now=self._clock.now().astimezone(JST).isoformat(),
                 context="{}",
                 resources={},
                 thread="[]",
