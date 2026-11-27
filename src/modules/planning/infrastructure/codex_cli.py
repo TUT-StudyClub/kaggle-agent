@@ -223,8 +223,20 @@ class CodexCLIPlanner(Planner):
             command = self._command(
                 schema, output, instructions=instructions, web_search=web_search
             )
-            stdout = self._execute(command, root, planning_input(request))
+            prompt = planning_input(request)
+            stdout = self._execute(command, root, prompt)
             try:
+                self._inspect_events(stdout, web_search)
+                try:
+                    return result_type.model_validate_json(output.read_text(encoding="utf-8"))
+                except ValidationError:
+                    if result_type is not Plan:
+                        raise
+                # 操作実行前の生成だけを一度やり直す。初回の出力は再利用しない。
+                output.unlink()
+                self.last_web_searches.clear()
+                retry_prompt = "前回の操作案は検証に失敗しました。各項目の制約を確認してください。"
+                stdout = self._execute(command, root, retry_prompt + "\n" + prompt)
                 self._inspect_events(stdout, web_search)
                 return result_type.model_validate_json(output.read_text(encoding="utf-8"))
             except OSError, ValueError, ValidationError:

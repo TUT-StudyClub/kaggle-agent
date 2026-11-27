@@ -15,7 +15,10 @@ description: Google Calendarの予定・空き時間を調べ、予定の作成�
    回答文の生成まで行う。AIが予定一覧から判定したり、計算結果の日時を文章に書き直したりしない。
 3. 作成・変更の依頼では、取得結果と会話から必要な入力を確認する。
    入力が揃ったら、作成は`meeting.create`、変更は`calendar.update`の操作案を返す。
-   招待する人はMember DBのSlackユーザーIDとCalendar Emailsで確認する。
+   既存予定の日時変更ではタイトルを保持し、開始と終了を同じ時間だけずらす。
+   `calendar.update`のdraftではdescriptionとlabelにnull、guest_emailsに空配列、
+   create_google_meetにfalseを指定する。既存の説明・参加者・会議情報はCalendar側で保持される。
+   以下は新規作成時の手順。招待する人はMember DBのSlackユーザーIDとCalendar Emailsで確認する。
    Google Meetが必要なら`draft.create_google_meet=true`を指定する。
    `slack.channels`で`10_competition_general`または相当する周知先を確認して、
    `meeting.create`の1操作に予定・招待先・周知文をまとめる。承認はPythonが1回だけ求める。

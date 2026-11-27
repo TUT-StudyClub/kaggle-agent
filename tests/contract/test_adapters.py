@@ -440,3 +440,28 @@ def test_slack_thread_excludes_unapproved_actors(harness: Harness):
     }
     text = SlackMessenger(client, harness.policy).thread(harness.source)
     assert "許可本文" in text and "非許可本文" not in text
+
+
+def test_invalid_plan_is_regenerated_once_before_execution(monkeypatch):
+    planner = CodexCLIPlanner(load_skillbook())
+    monkeypatch.setattr(planner, "check_auth", lambda: None)
+    outputs = iter(
+        ['{"action":{"kind":"reply","text":""}}', '{"action":{"kind":"reply","text":"ok"}}']
+    )
+
+    def respond(command, root, prompt):
+        output = Path(command[command.index("--output-last-message") + 1])
+        assert not output.exists()
+        output.write_text(next(outputs))
+        return ""
+
+    monkeypatch.setattr(planner, "_execute", respond)
+    request = PlanningRequest(
+        instruction="予定を変更",
+        now="2026-11-26",
+        context="{}",
+        resources={},
+        thread="[]",
+        observations=[],
+    )
+    assert planner.plan(request).action.kind == "reply"
